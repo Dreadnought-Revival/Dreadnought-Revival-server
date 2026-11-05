@@ -1,6 +1,6 @@
 ---
 name: dreadnought-patch-notes
-description: Write player-facing patch notes for the Dreadnought private server, ready to paste into Discord. Use whenever the operator asks for patch notes, release notes, a changelog for players, or "what changed" for the community, after changes to mmogbrain, the battle-server mod or the launcher.
+description: Write player-facing patch notes for the Dreadnought private server, ready to paste into Discord, reported per game mode and built from the commits' "Patch notes:" blocks. Use whenever the operator asks for patch notes, release notes, a changelog for players, or "what changed" for the community, after changes to mmogbrain, the battle-server mod or the launcher. Also defines the per-game-mode "Patch notes:" block every commit body ends with.
 ---
 
 # Patch notes for players
@@ -12,12 +12,23 @@ developers. They want to know what plays differently, not how it was fixed.
 
 1. Find where the last notes stopped. Ask nothing: use the conversation (the
    last notes given), else `git log --since=<date of last notes>`.
-2. Read each commit since then: `git log --format='%h %ad %s%n%b' --date=short`.
-   The commit bodies say what was verified and what was not.
-3. Only list what is **deployed**. A change that is committed but not live
+2. Read every commit since then, in **both** repositories (server and
+   `../Dreadnought-Revival-Launcher`):
+   `git log --format='%h %ad %s%n%b' --date=short --since=<date>`.
+3. **Start from each commit's `Patch notes:` block** (the default since
+   2026-11-05, see `CONTRIBUTING.md`): one line per player-visible change,
+   already prefixed with its game mode and written for players. Sort those
+   lines into the per-mode sections below, merge lines that describe the
+   same change, and keep the newest wording when a later commit corrects an
+   earlier one. Skip commits that say `Patch notes: none (internal)`.
+4. A commit without the block (older ones) is read from its subject and body,
+   and its changes are assigned to game modes the same way.
+5. The rest of each body says what was verified and what was not; use it for
+   the "please report" section.
+6. Only list what is **deployed**. A change that is committed but not live
    goes under nothing, or is held back until it is deployed. Check the deploy
    time against the commit (memory files and the deploy script output record
-   it).
+   it). Launcher changes count as deployed once their release is published.
 
 ## Format
 
@@ -40,10 +51,14 @@ Copy this shape exactly: same heading style, same order, same tone.
   look for>, and whether <another concrete thing>.
 ```
 
-- One section per game mode, using the in-game names: Team Deathmatch, Team
-  Elimination, Conquest, Onslaught, Ceres Awakens, Proving Grounds, Havoc,
-  Turbo TDM. Use "Launcher", "Hangar", "Market", "Tech tree" or "General"
-  for everything else.
+- **Report per game mode.** One section per game mode that changed, using the
+  in-game names: Team Deathmatch, Team Elimination, Conquest, Onslaught, Ceres
+  Awakens, Proving Grounds, Havoc, Turbo TDM, Escalation. Game modes first, in
+  that order; then **All game modes** for changes that affect every mode (a
+  player reads their own mode's section and this one); then Launcher,
+  Hangar, Market, Tech tree, Social, General. A mode with no change gets no
+  section. A change that plays differently in several modes is listed under
+  each of them, in that mode's terms.
 - Map names as players know them: Ryugu Haven (Space02), Elysium (Paradise),
   Amirani, Juno (Space03), Cronian Rapids (Space04), Thebe (DansMap). Never the
   internal path.
@@ -71,6 +86,22 @@ Copy this shape exactly: same heading style, same order, same tone.
   problem that turned out to be fine. Say so in one line: "Checked: X already
   works like the original".
 - Keep it short: one or two lines per bullet, no paragraphs.
+
+## The `Patch notes:` block in commits
+
+Every commit in both repositories ends its body (before the trailers) with
+the block these notes are built from, in the same per-mode terms:
+
+```
+Patch notes:
+- Conquest: Captured points now show as your team's territory on the minimap.
+- All game modes: Match rewards are paid as soon as the end screen opens.
+- Launcher: Shows when a new version is available and updates itself.
+```
+
+Same rules as the notes themselves (player words, no internals, no sensitive
+data, never invent); `Patch notes: none (internal)` for work players never
+see. Full rules: `CONTRIBUTING.md`, "The `Patch notes:` block".
 
 ## Deliver
 

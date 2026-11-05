@@ -230,6 +230,8 @@ Full detail and the debugging order are in the `dreadnought-mmog-responses` skil
 
 Lowercase, scoped subjects: `techtree: ClassId must be an item id, not the EYShipClass ordinal`. Push to `main` of the repository the change belongs to (server or launcher); a change spanning both is two commits, one per repository. For protocol changes the body must record the evidence (function, offset, client log before/after) and state plainly what was **not** verified against a running client.
 
+**Every commit body ends (before the trailers) with a `Patch notes:` block**: one line per player-visible change, prefixed with the game mode it affects (in-game names; "All game modes", "Launcher", "Hangar", "Market", "Tech tree", "Social" or "General" otherwise), in player words, or `Patch notes: none (internal)`. This applies to the launcher repository too. Format and rules: `CONTRIBUTING.md` ("The `Patch notes:` block"); the `dreadnought-patch-notes` skill builds the Discord notes from these blocks.
+
 ## Reference docs
 
 - `CONTRIBUTING.md` — working rules, protocol invariants, debugging method (read first)

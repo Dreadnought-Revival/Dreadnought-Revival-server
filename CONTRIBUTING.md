@@ -139,6 +139,24 @@ Bodies matter more than usual. For anything protocol-related, record the evidenc
 
 Say plainly what you did **not** verify. "Not yet confirmed against a running client" is useful information, and this project moves fast enough that unverified-but-reasoned changes are welcome — as long as they are labelled.
 
+### The `Patch notes:` block (every commit, since 2026-11-05)
+
+Every commit body ends, before the trailers, with what a **player** will notice, **per game mode**. It is the source the player-facing patch notes are written from (`.claude/skills/dreadnought-patch-notes`), so it is written for players, not developers:
+
+```
+Patch notes:
+- Conquest: Captured points now show as your team's territory on the minimap. Before, the minimap stayed grey.
+- Team Elimination: Rounds start from your team's side again.
+- All game modes: Match rewards are paid as soon as the end screen opens.
+- Launcher: Shows when a new version is available and updates itself.
+```
+
+- One line per change, prefixed with the area it affects. Game modes by their in-game names: Team Deathmatch, Team Elimination, Conquest, Onslaught, Ceres Awakens, Proving Grounds, Havoc, Turbo TDM, Escalation. A change that affects every mode: **All game modes**. Everything else: **Launcher**, **Hangar**, **Market**, **Tech tree**, **Social**, **General**.
+- A change that touches several modes differently gets one line per mode.
+- Player words only: no function names, offsets, file names, switches or log lines (those stay in the rest of the body). Never invent; say "our best estimate" for a GUESS value, and "please check X" for what is not verified live.
+- No sensitive data: no domain, IPs, player names or IDs.
+- Purely internal work (tests, docs, tooling, diagnostics a player never sees) says so: `Patch notes: none (internal)`.
+
 ## Reporting a problem
 
 A good report includes:
