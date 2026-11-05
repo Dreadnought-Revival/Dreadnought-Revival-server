@@ -126,7 +126,8 @@ func main() {
 	crashReportDir := getenv("CRASH_REPORT_DIR", "crash-reports")
 	certFile := getenv("TLS_CERT", "certs/server.crt")
 	// CA_CERT: the CA that issued certFile, served at /dn/ca.crt. Missing =
-	// that path 404s (launchers then cannot add this server by address).
+	// that path 404s (a launcher whose server list gives this server no
+	// ca_cert then cannot get its CA).
 	//nolint:gosec // operator-configured certificate path.
 	caCertPEM, _ := os.ReadFile(getenv("CA_CERT", "certs/ca.crt"))
 	keyFile := getenv("TLS_KEY", "certs/server.key")
@@ -189,8 +190,8 @@ func main() {
 			promhttp.Handler().ServeHTTP(w, r)
 			return
 		}
-		// The server's CA, for a launcher pointed at this server from its
-		// server picker (servers_windows.go in Dreadnought-Revival-Launcher).
+		// The server's CA, for a launcher whose server list has no ca_cert
+		// for this server (servers_windows.go in Dreadnought-Revival-Launcher).
 		// Public by nature -- it is what players install; the key never
 		// leaves certs/. Any host, since such a launcher dials the IP.
 		if r.URL.Path == "/dn/ca.crt" && len(caCertPEM) > 0 {
