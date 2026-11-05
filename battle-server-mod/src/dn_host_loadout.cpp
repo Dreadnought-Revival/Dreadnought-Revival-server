@@ -4451,6 +4451,7 @@ typedef void(__fastcall *tProcessEventVirt)(void *obj, void *fn, void *parms);
 #define OFF_PRI_DAMAGE_ABILITIES 0x90C
 #define OFF_PRI_DAMAGE_RECEIVED 0x910     // m_totalDamageReceived (SDK)
 #define OFF_PRI_RAW_DAMAGE_RECEIVED 0x918 // m_rawDamageReceivedTotal (SDK)
+#define OFF_PRI_SHIELD_DAMAGE_RECEIVED 0x920 // m_totalDamageReceivedOnShield (SDK)
 #define OFF_PRI_TEAM 0x940
 // Statistics screen figures (2026-10-15), from the SDK dump like the rest:
 // m_score IntProperty, m_totalHealingDone FloatProperty. NOT verified live.
@@ -5395,9 +5396,16 @@ static void ClassTimeTick(uint8_t *gm) {
 // counters, the ones that are reported: m_totalDamageDealtWithWeapons +0x908
 // + WithAbilities +0x90C, m_totalDamageReceived +0x910, m_rawDamageReceivedTotal
 // +0x918 (SDK dump DreadGame_Classes.h AYPlayerReplicationInfo). GUESS:
-// counters "disagree" outside 0.8-1.25x once either side passes 10000. NOT
-// verified live: whether the PRI counts damage before or after shields; the
-// first matches will show it.
+// counters "disagree" outside 0.8-1.25x once either side passes 10000.
+//
+// First live match (2026-11-05 21:04-21:15, two players): dealt matched to
+// within 2 of ~490000 and ~375000 -- the reported damage is right. Received
+// did NOT match and is not meant to: m_totalDamageReceived was 0.76x and
+// 0.65x of the TakeDamage sum, m_rawDamageReceivedTotal 1.9x and 2.2x (more
+// than was even asked), so they count something else (THEORY: shield hits
+// are left out of m_totalDamageReceived; m_totalDamageReceivedOnShield +0x920
+// is logged to test it). Only dealt is flagged since; received is reported
+// for the record.
 #define SPEED_JUMP_UPS 3000.0f
 #define SPEED_FLAG_UPS 2000.0f
 #define SPEED_BOT_FACTOR 1.5f
@@ -5629,16 +5637,18 @@ static void TakeFairPlayChecks(const char *pid, uint8_t *pc, uint8_t *pri, char 
   memcpy(bots, g_botSpeed, sizeof(bots));
   ReleaseSRWLockExclusive(&g_checksLock);
 
-  float priDealt = 0, priTaken = 0, priRawTaken = 0;
+  float priDealt = 0, priTaken = 0, priRawTaken = 0, priShieldTaken = 0;
   __try {
     priDealt = *(float *)(pri + OFF_PRI_DAMAGE_WEAPONS) + *(float *)(pri + OFF_PRI_DAMAGE_ABILITIES);
     priTaken = *(float *)(pri + OFF_PRI_DAMAGE_RECEIVED);
     priRawTaken = *(float *)(pri + OFF_PRI_RAW_DAMAGE_RECEIVED);
+    priShieldTaken = *(float *)(pri + OFF_PRI_SHIELD_DAMAGE_RECEIVED);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
   }
   if (!(priDealt >= 0 && priDealt < 1e9f)) priDealt = 0;
   if (!(priTaken >= 0 && priTaken < 1e9f)) priTaken = 0;
   if (!(priRawTaken >= 0 && priRawTaken < 1e9f)) priRawTaken = 0;
+  if (!(priShieldTaken >= 0 && priShieldTaken < 1e9f)) priShieldTaken = 0;
 
   // Speed, per class flown: "class.sustained.fastest.bot_sustained.bot_samples".
   char spd[CHECK_CLASSES * 40 + 8];
@@ -5670,21 +5680,20 @@ static void TakeFairPlayChecks(const char *pid, uint8_t *pc, uint8_t *pri, char 
     double r = a / b;
     return r < 0.8 || r > 1.25;
   };
-  bool dealtFlag = disagree(priDealt, h.dealt), takenFlag = disagree(priTaken, h.taken);
+  bool dealtFlag = disagree(priDealt, h.dealt); // received is not comparable (see above)
   Logf("fair play: %s speed [%s] jumps %d (largest %.0f units in a second)%s%s; damage dealt: reported %.0f, "
-       "measured %.0f (asked %.0f, %d hits, %.0f to humans)%s; received: reported %.0f (raw %.0f), measured %.0f "
-       "(asked %.0f, %d hits, %.0f without instigator)%s",
+       "measured %.0f (asked %.0f, %d hits, %.0f to humans)%s; received (not flagged): reported %.0f (raw %.0f, "
+       "on shield %.0f), measured %.0f (asked %.0f, %d hits, %.0f without instigator)",
        pid, spd, h.jumps, h.maxJump, speedFlag ? " -- FLAG speed: " : "", speedFlag ? speedWhy : "", priDealt,
        h.dealt, h.dealtAsked, h.hitsDealt, h.dealtToHumans, dealtFlag ? " -- FLAG dealt counters disagree" : "",
-       priTaken, priRawTaken, h.taken, h.takenAsked, h.hitsTaken, h.takenNoInstigator,
-       takenFlag ? " -- FLAG received counters disagree" : "");
+       priTaken, priRawTaken, priShieldTaken, h.taken, h.takenAsked, h.hitsTaken, h.takenNoInstigator);
   size_t pl = strlen(path);
   _snprintf_s(path + pl, pathLen - pl, _TRUNCATE,
               "&chk_spd=%s&chk_jumps=%d&chk_dmg_measured=%lld&chk_dmg_hits=%d&chk_recv=%lld&chk_recv_raw=%lld"
-              "&chk_recv_measured=%lld&chk_recv_hits=%d&chk_flags=%s%s%s",
+              "&chk_recv_shield=%lld&chk_recv_measured=%lld&chk_recv_hits=%d&chk_flags=%s%s",
               spd, h.jumps, (long long)h.dealt, h.hitsDealt, (long long)priTaken, (long long)priRawTaken,
-              (long long)h.taken, h.hitsTaken, speedFlag ? "speed." : "", dealtFlag ? "dealt." : "",
-              takenFlag ? "received." : "");
+              (long long)priShieldTaken, (long long)h.taken, h.hitsTaken, speedFlag ? "speed." : "",
+              dealtFlag ? "dealt." : "");
 }
 
 static bool SwitchOn(const char *envName, const char *markerFile);

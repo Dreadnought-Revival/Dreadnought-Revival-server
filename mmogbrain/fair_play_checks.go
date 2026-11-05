@@ -17,7 +17,12 @@ import (
 //
 //	chk_spd=class.sustained.fastest.bot_sustained.bot_samples,...  (units/s)
 //	chk_jumps, chk_dmg_measured, chk_dmg_hits, chk_recv, chk_recv_raw,
-//	chk_recv_measured, chk_recv_hits, chk_flags=speed.dealt.received.
+//	chk_recv_shield, chk_recv_measured, chk_recv_hits, chk_flags=speed.dealt.
+//
+// Received damage is reported, not flagged: the first live match (2026-11-05)
+// showed the player state's received counters count something else than the
+// TakeDamage sum (0.65-0.76x and ~2x), while dealt matched to within 2. An
+// older DLL's "received" flag is still read.
 //
 // Nothing here acts on a player: the figures are stored per match in
 // battle_result_stats (stat names "check_..."), and a flagged result is logged
@@ -37,6 +42,7 @@ func fairPlayCheckStats(q url.Values) (map[string]int64, []string) {
 		"chk_dmg_hits":      "check_damage_hits",
 		"chk_recv":          "check_received",
 		"chk_recv_raw":      "check_received_raw",
+		"chk_recv_shield":   "check_received_shield",
 		"chk_recv_measured": "check_received_measured",
 		"chk_recv_hits":     "check_received_hits",
 	} {

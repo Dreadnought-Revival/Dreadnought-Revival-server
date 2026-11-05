@@ -1461,13 +1461,19 @@ a player.
   player's ship received, asked and dealt. At the match result these are set
   against the player state's own counters: dealt with weapons `+0x908` plus
   abilities `+0x90C` (what `damage=` reports), received `+0x910`, raw received
-  `+0x918` (SDK dump). Flagged (GUESS) when the two disagree by more than
-  0.8-1.25x once either passes 10000. NOT verified live: whether the player
-  state counts damage before or after shields.
+  `+0x918` (SDK dump). Dealt is flagged (GUESS) when the two disagree by more
+  than 0.8-1.25x once either passes 10000. First live match (2026-11-05,
+  two players): dealt matched to within 2 of ~490000 / ~375000, so the
+  reported damage is right. Received is not comparable --
+  `m_totalDamageReceived` was 0.76x / 0.65x of the TakeDamage sum and
+  `m_rawDamageReceivedTotal` 1.9x / 2.2x -- so it is only reported, with
+  `m_totalDamageReceivedOnShield` (`+0x920`) logged to test the THEORY that
+  shield hits are what `m_totalDamageReceived` leaves out.
 
 Reported with the match result as `chk_spd=class.sustained.fastest.bot_sustained.bot_samples,...`,
 `chk_jumps`, `chk_dmg_measured`, `chk_dmg_hits`, `chk_recv`, `chk_recv_raw`,
-`chk_recv_measured`, `chk_recv_hits` and `chk_flags`. mmogbrain stores them
+`chk_recv_shield`, `chk_recv_measured`, `chk_recv_hits` and `chk_flags`
+(`speed.`, `dealt.`). mmogbrain stores them
 per match in `battle_result_stats` (`check_...`) and warns
 `fair play: match result flagged` (`mmogbrain/fair_play_checks.go`).
 
