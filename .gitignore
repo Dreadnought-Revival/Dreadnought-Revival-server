@@ -68,3 +68,6 @@ backups/
 *.log.*
 tls-sha384-clients.json
 tls-sha384-clients.json.tmp
+
+# Local helper script (not part of the project)
+mdmp_read.py

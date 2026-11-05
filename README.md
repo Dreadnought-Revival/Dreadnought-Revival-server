@@ -368,7 +368,6 @@ Dreadnought-Revival-server/
 ├── AGENTS.md           operational gotchas for agents
 ├── CONTRIBUTING.md     working rules, protocol invariants, debugging method
 ├── AGENT-CHAT.md       the running log with the client-side project
-├── issues.md           known bugs and blockers
 ├── certs/              CA + server certificates  (generated, gitignored)
 └── run/                binaries, databases, logs, secrets.env  (gitignored)
 ```
@@ -459,6 +458,8 @@ Regenerate with `SERVER_IP=<ip>` if it does not.
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). The short version: this is a server for a client we cannot change and did not write, so **never invent data** — everything the server sends must be traceable to the client's own tables or to its binary. Read the client's parsers before forming a theory about a payload.
+
+Open work is in the [issues](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server/issues). Several need the original game's values (label `original-data`): if you have archived configs, wiki or forum snapshots, patch notes, or videos/screenshots of the rewards, research, career or leaderboard screens, those are the most useful contributions.
 
 ## Documentation
 

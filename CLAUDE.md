@@ -86,16 +86,18 @@ mmogbrain -- never by patching the client:
   environment tag, and spares the Wine prefix's shared processes (killing them
   took down every other host in the prefix).
 
-Open on 2026-09-25, and what became of it (updated 2026-11-05; see `issues.md`;
-issue numbers are in the [old repository](https://github.com/darkace1998/Dreadnought-Revival-project/issues)):
+Open on 2026-09-25, and what became of it (updated 2026-11-05). **Open work is
+tracked in [GitHub issues](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server/issues)** since 2026-11-05 (`issues.md` was retired);
+numbers like #67 in older commits and docs are the [old repository's](https://github.com/darkace1998/Dreadnought-Revival-project/issues).
 
-- **Scores always 0** (#67): FIXED 2026-09-28, verified live. The mod feeds
+- **Scores always 0** (old #67): FIXED 2026-09-28, verified live. The mod feeds
   mmogbrain's `/battle/scoring` table through the client's own parser.
-- **Career goals** (#68): rebuilt 2026-10-09 from the original texts; the
-  goal pairing and targets are still GUESSES. Tech-tree costs too (#66).
+- **Career goals**: rebuilt 2026-10-09 from the original texts; the goal
+  pairing and targets are still GUESSES ([#3](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server/issues/3)). Tech-tree costs too
+  ([#2](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server/issues/2)).
 - **Match rewards**: paid from the mod's `/battle/result` report; the rewards
-  page was verified live 2026-11-03. The amounts are still GUESS values
-  (`DN_REWARD_*`); the real reward tables are #71.
+  page was verified live 2026-11-03. The base amounts are still GUESS values
+  (`DN_REWARD_*`): [#1](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server/issues/1).
 - **Daily contracts**: implemented 2026-10-09; claiming verified live 2026-11-03.
 - **Statistics screen** overflow: FIXED 2026-10-09 (the reply needs root pids
   and one root stats entry per pid); filled with real counters since 2026-10-15.
@@ -103,8 +105,20 @@ issue numbers are in the [old repository](https://github.com/darkace1998/Dreadno
   mode started; dn-dedicated now waits for it. Verified 2026-10-03: 13.6% -> ~2%.
 - **Market prices 0 on slow links**: the catalog is now gzipped the way the
   client unpacks it (`Content-Type: application/gzip`), verified live 2026-11-05.
-- Still open: the client sends `YA_GameModeEvent` and `YA_LogSpecial`, which we
-  do not answer.
+- `YA_GameModeEvent` and `YA_LogSpecial` ARE answered (this line said otherwise
+  until 2026-11-05): the first as fire-and-forget telemetry
+  (`response_dispatcher.go`), the second stored as a client report
+  (`client_reports.go`).
+- **Validated by the operator 2026-11-05:** the market catalog without "Field id
+  was not found" errors, Escalation's drop-two-levels rule and the owned-cosmetic
+  offers, the game-mode work now live with the 11-05 DLL (Conquest territory and
+  capture points, Team Elimination sides/ready-up/rounds, Onslaught command ship
+  abilities and fire, Havoc jets and wave modifiers, Ceres pods), and in
+  mmogbrain Loadout B, the chat filter, direct messages, officer briefings, the
+  tech-tree ship page and the captain slots.
+- Open, besides the data issues above: leaderboard rules ([#4](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server/issues/4)), Ceres
+  pickup values ([#5](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server/issues/5)), PvE seasons ([#6](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server/issues/6)), joining a running
+  match ([#7](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server/issues/7)).
 
 ## Commands
 
@@ -221,7 +235,7 @@ Lowercase, scoped subjects: `techtree: ClassId must be an item id, not the EYShi
 - `CONTRIBUTING.md` — working rules, protocol invariants, debugging method (read first)
 - `AGENTS.md` — agent-oriented gotchas and current test status
 - `AGENT-CHAT.md` — the running log with the client-side project
-- `issues.md` — known bugs and blockers
+- [GitHub issues](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server/issues) — open work (replaced `issues.md` on 2026-11-05)
 - `battle-server-mod/README.md` — the host mod: hooks, switches, build and deploy
 - `docs/battle-server-data-path.md` — how a battle server gets its data
 - `docs/web-services-endpoints.md` — the client's web-service endpoint table

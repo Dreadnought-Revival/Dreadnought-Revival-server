@@ -295,6 +295,6 @@ Debug switches worth knowing: `DN_CONTROL_PLANE`, `DN_FORCE_GAME_MODE`,
 The 2026-08-02 snapshot that stood here is long superseded: players spawn with
 their own fitted loadouts, matches run to the victory screen, and rewards, scores,
 contracts, statistics and the market all work live. `CLAUDE.md` ("Current state")
-has the list with what is verified and what is still a GUESS; `issues.md` has
-the open bugs. `docs/battle-server-data-path.md` still explains how a battle
+has the list with what is verified and what is still a GUESS; open work is in
+the [GitHub issues](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server/issues) (`issues.md` was retired 2026-11-05). `docs/battle-server-data-path.md` still explains how a battle
 server gets its data, which is why the host mod exists.
