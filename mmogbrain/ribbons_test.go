@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/protocol"
+	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/protocol"
 )
 
 // Ribbons come from the original scoring table: one per EventsForRibbon

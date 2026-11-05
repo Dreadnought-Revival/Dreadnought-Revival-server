@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	dreadconfig "github.com/darkace1998/Dreadnought-Revival-project/shared/dreadgameconfig"
+	dreadconfig "github.com/Dreadnought-Revival/Dreadnought-Revival-server/shared/dreadgameconfig"
 )
 
 // The client looks tuning rows up by BLUEPRINT ASSET NAME. These four names are

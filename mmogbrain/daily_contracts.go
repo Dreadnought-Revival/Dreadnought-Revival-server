@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/protocol"
+	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/protocol"
 	"github.com/sirupsen/logrus"
 )
 

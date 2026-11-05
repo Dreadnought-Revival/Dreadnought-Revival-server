@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/protocol"
+	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/protocol"
 )
 
 // A ship's page shows, under its tree, the ships it leads to and the briefing

@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/protocol"
+	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/protocol"
 )
 
 // A bought hero reaches the client at once: the purchase queues a YA_ClaimItem

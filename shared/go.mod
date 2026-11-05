@@ -1,4 +1,4 @@
-module github.com/darkace1998/Dreadnought-Revival-project/shared
+module github.com/Dreadnought-Revival/Dreadnought-Revival-server/shared
 
 go 1.24.0
 

@@ -2,7 +2,7 @@
 
 A local, headless dedicated server for **Dreadnought**, driven from the command
 line and compatible with the
-[Dreadnought-Revival-project](../Dreadnought-Revival-project-master).
+[Dreadnought-Revival-server](../README.md).
 
 Dreadnought never shipped a dedicated-server build. The battle server is the
 **ordinary client executable** run as a headless listen server. That method was

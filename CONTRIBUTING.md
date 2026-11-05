@@ -50,7 +50,7 @@ Corollary: **count things.** When the client logged twelve errors, the useful qu
 
 ### The client — minimal changes
 
-A player installs `dn-launcher/`, which replaces the original launcher so we can sign in, trust our certificate, and redirect the hostnames. That is the intended extent of it. Anything further should be the last thing tried, not the first, and needs a reason that survives being written down.
+A player installs the launcher ([Dreadnought-Revival-Launcher](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher)), which replaces the original launcher so we can sign in, trust our certificate, and redirect the hostnames. That is the intended extent of it. Anything further should be the last thing tried, not the first, and needs a reason that survives being written down.
 
 The reason is not purity. A client change has to be shipped to and applied by every player, it breaks when the game updates underneath it, and it makes every bug report ambiguous — you no longer know whether you are debugging the game or your patch. A backend change has none of those properties.
 

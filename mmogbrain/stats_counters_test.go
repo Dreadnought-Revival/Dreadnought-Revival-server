@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/protocol"
+	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/protocol"
 )
 
 // realIncrementRequest is a verbatim capture of what the client sends. The ids

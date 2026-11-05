@@ -22,8 +22,8 @@ package main
 // result "ok", or "squad_not_in_waiting_state" (0x142A2B933).
 
 import (
-	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/matchmaker"
-	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/protocol"
+	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/matchmaker"
+	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/protocol"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )

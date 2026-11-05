@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"testing"
 
-	legacydb "github.com/darkace1998/Dreadnought-Revival-project/legacy-api/db"
-	dreadconfig "github.com/darkace1998/Dreadnought-Revival-project/shared/dreadgameconfig"
+	legacydb "github.com/Dreadnought-Revival/Dreadnought-Revival-server/legacy-api/db"
+	dreadconfig "github.com/Dreadnought-Revival/Dreadnought-Revival-server/shared/dreadgameconfig"
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
 )

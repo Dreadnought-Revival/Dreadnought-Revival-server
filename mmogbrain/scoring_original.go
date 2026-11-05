@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	dreadconfig "github.com/darkace1998/Dreadnought-Revival-project/shared/dreadgameconfig"
+	dreadconfig "github.com/Dreadnought-Revival/Dreadnought-Revival-server/shared/dreadgameconfig"
 	"github.com/sirupsen/logrus"
 )
 

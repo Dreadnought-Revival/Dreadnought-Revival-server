@@ -27,7 +27,7 @@ curl http://127.0.0.1:8085/health   # game-manager
 
 ## Workspace Layout
 
-This is a **Go workspace** (`go.work`). Each service is an independent Go module under `github.com/darkace1998/Dreadnought-Revival-project/<service>`. The `shared/` module (`github.com/darkace1998/Dreadnought-Revival-project/shared`) provides common packages consumed by all services.
+This is a **Go workspace** (`go.work`). Each service is an independent Go module under `github.com/Dreadnought-Revival/Dreadnought-Revival-server/<service>`. The `shared/` module (`github.com/Dreadnought-Revival/Dreadnought-Revival-server/shared`) provides common packages consumed by all services.
 
 ```
 auth-server/    :8081  Login, JWT issuance, bans (SQLite: auth.db)

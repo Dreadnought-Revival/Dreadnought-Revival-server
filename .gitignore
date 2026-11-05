@@ -50,9 +50,6 @@ bin/
 /game-manager/game-manager
 /gateway/gateway
 /master-server/master-server
-/dn-launcher/dn-launcher
-/dn-launcher/dn-launcher.exe
-/dn-launcher/dreadnought-launcher.exe
 
 # dn-dedicated build output (`go build -o dn-dedicated.exe .`), not source
 /dn-dedicated/dn-dedicated.exe

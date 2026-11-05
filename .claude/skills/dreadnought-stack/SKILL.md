@@ -7,7 +7,7 @@ description: Orientation for the Dreadnought private server - what runs where, h
 
 A community private server for the discontinued game **Dreadnought** (UE4
 4.13.1). The client is **unmodified**; the only thing a player installs is
-`dn-launcher/`. The **battle server** is moddable — same executable, run headless
+`dn-launcher` (its own repository, [Dreadnought-Revival-Launcher](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher)). The **battle server** is moddable — same executable, run headless
 by the operator (`battle-server-mod/`). That asymmetry is the project's core rule.
 
 ## The loop you will actually run

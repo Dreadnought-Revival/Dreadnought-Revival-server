@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/protocol"
+	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/protocol"
 )
 
 // The reply to the client's own YA_GetDailyContractsData request is parsed by

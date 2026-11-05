@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	dreadconfig "github.com/darkace1998/Dreadnought-Revival-project/shared/dreadgameconfig"
+	dreadconfig "github.com/Dreadnought-Revival/Dreadnought-Revival-server/shared/dreadgameconfig"
 )
 
 // Every offer has a description of at least two characters: the Market's

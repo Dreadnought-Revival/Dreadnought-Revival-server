@@ -1,6 +1,9 @@
 # Dreadnought Revival Project
 
-[![GitHub](https://img.shields.io/badge/GitHub-darkace1998/Dreadnought--Revival--project-blue?logo=github)](https://github.com/darkace1998/Dreadnought-Revival-project)
+[![GitHub](https://img.shields.io/badge/GitHub-Dreadnought--Revival/Dreadnought--Revival--server-blue?logo=github)](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server)
+[![Launcher](https://img.shields.io/badge/GitHub-Dreadnought--Revival/Dreadnought--Revival--Launcher-blue?logo=github)](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher)
+
+> Moved on 2026-11-05 from `darkace1998/Dreadnought-Revival-project` (history kept). The launcher now lives in its own repository, [Dreadnought-Revival-Launcher](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher). Issue and PR numbers (`#67`, `#80`, ...) in commits and docs before the move refer to the [old repository](https://github.com/darkace1998/Dreadnought-Revival-project).
 
 A community-operated private server for the discontinued game **Dreadnought** (UE4 4.13.1, Steam App 835860). The goal is to run the **unmodified game client** against our own backend: everything is emulated server-side, and the only thing a player installs is a replacement launcher.
 
@@ -47,7 +50,7 @@ Two different things are called "gateway", which is worth knowing before reading
 | **game-manager** | 8085 | Spawns and monitors battle-server processes |
 | **DreadGame (Wine)** | 7777-7877/UDP | One battle server per active match |
 | **admin-cli** | — | Operator CLI (`servers`, `instances`, `stop-instance`, `ban`, `unban`, `queue`, `chat`, `players`, `grant`) |
-| **dn-launcher** | — | Windows launcher replacement (register / sign in / start the game) |
+| **dn-launcher** | — | Windows launcher replacement (register / sign in / start the game), in its own repository: [Dreadnought-Revival-Launcher](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher) |
 
 ---
 
@@ -66,8 +69,8 @@ Go **1.24 or newer** is required — `go.work` declares 1.25 and the modules dec
 ### 2. Clone and set up
 
 ```bash
-git clone https://github.com/darkace1998/Dreadnought-Revival-project.git
-cd Dreadnought-Revival-project
+git clone https://github.com/Dreadnought-Revival/Dreadnought-Revival-server.git
+cd Dreadnought-Revival-server
 
 bash scripts/setup.sh
 ```
@@ -76,7 +79,7 @@ bash scripts/setup.sh
 
 - checks the toolchain (and warns, without failing, if Wine is absent);
 - generates a self-signed CA and server certificate into `certs/` if none exists;
-- builds all seven services into `run/`, plus `run/dn-launcher.exe` (cross-compiled for Windows);
+- builds all seven services into `run/`, plus `run/dn-launcher.exe` (cross-compiled for Windows) when a checkout of [Dreadnought-Revival-Launcher](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher) sits beside this one (`../Dreadnought-Revival-Launcher`, or set `LAUNCHER_DIR`);
 - writes `run/secrets.env` with a freshly generated `JWT_SECRET` and `ADMIN_KEY` (mode 600) if it does not exist;
 - verifies the extracted game data under `data/` is present.
 
@@ -184,16 +187,14 @@ news use 443; the game's own ports are unaffected). Both settings can be built
 into a distributed launcher, so testers need no `dn-launcher.json` at all:
 
 ```bash
+# in a checkout of Dreadnought-Revival-Launcher
 GOOS=windows go build -ldflags "-H windowsgui \
   -X main.defaultServer=play.example.org -X main.defaultWebPort=8443 \
-  -X main.defaultCA=$(base64 -w0 certs/ca.crt)" ./dn-launcher
+  -X main.defaultCA=$(base64 -w0 /path/to/Dreadnought-Revival-server/certs/ca.crt)" -o dn-launcher.exe .
 ```
 
-The exe's icon, version information and manifest (runs without admin rights)
-come from `dn-launcher/rsrc_windows_amd64.syso`, which `go build` links in
-automatically. It is generated from `dn-launcher/winres/` (`winres.json` and
-`icon.png`); after changing either, regenerate it:
-`cd dn-launcher && go run github.com/tc-hib/go-winres@v0.3.3 make --in winres/winres.json --arch amd64`.
+The launcher's source, its icon resources and the rest of its build notes are in
+[Dreadnought-Revival-Launcher](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher).
 
 `-H windowsgui` opens the desktop window with no console flashing up (the
 console flow opens its own console when it needs one). `defaultCA` builds the
@@ -233,14 +234,14 @@ Then install `certs/ca.crt` as a trusted root CA:
 
 **Linux players:** the game runs through Proton or Wine, and the certificate,
 the sign-in token and the game's arguments must be set up inside that same
-Wine/Proton prefix. `dn-launcher/linux/dn-launcher-linux.sh` therefore runs the
+Wine/Proton prefix. The launcher repository's `linux/dn-launcher-linux.sh` therefore runs the
 Windows launcher there: it finds the game in the Steam libraries (or
 `DN_GAME_DIR`), uses the game's Proton prefix when Steam created one (else Wine
 with `~/.local/share/dreadnought-wine`), and passes the game path as
 `DN_GAME_PATH`. WebView2 is not available under Wine, so the launcher opens in
 the Linux browser instead: the same page as the desktop window (sign-in, the
 certificate, the game folder, options, Play), served on a random loopback port
-(`browser_windows.go`). Windows PCs without WebView2, or `--console`, get the
+(the launcher's `browser_windows.go`). Windows PCs without WebView2, or `--console`, get the
 same browser page. Ship the script with `dn-launcher.exe` and `icon.png` beside it;
 `--install` adds a menu entry.
 
@@ -258,7 +259,7 @@ The window is laid out like the original Dreadnought launcher: borderless
 GAME top right, the news carousel beside a news panel, and sign-in / create
 account as two boxes side by side. Its background, logo and fonts are the
 original ones, read at start from `DreadnoughtLauncher.exe` in the player's own
-game folder (`origassets_windows.go`; the file is a Solid State Networks skin
+game folder (the launcher's `origassets_windows.go`; the file is a Solid State Networks skin
 archive the code decrypts with a password it finds in that same exe). Nothing
 of the original launcher is copied into this repository or into
 `dn-launcher.exe`; without that file the window keeps the same layout in plain
@@ -293,7 +294,7 @@ Known gaps:
 ## Project layout
 
 ```
-Dreadnought-Revival-project/
+Dreadnought-Revival-server/
 ├── auth-server/     Go + SQLite -- registration, login, JWT
 ├── legacy-api/      Go + SQLite -- profiles, inventory, match history
 ├── mmogbrain/       Go + SQLite -- mmog binary protocol, catalog, fleets, matchmaking
@@ -301,7 +302,6 @@ Dreadnought-Revival-project/
 ├── game-manager/    Go         -- battle-server spawner and port pool
 ├── gateway/         Go         -- TLS termination and reverse proxy
 ├── admin-cli/       Go         -- operator CLI
-├── dn-launcher/     Go         -- Windows launcher replacement (client-side)
 ├── shared/          shared packages (db, logging, middleware, game data loader)
 ├── data/            extracted game data: item tables, loadouts, assets (committed)
 ├── certs/           CA + server certificate  (generated, gitignored)
@@ -326,7 +326,7 @@ Dreadnought-Revival-project/
 
 ## Development
 
-The repository is a Go workspace (`go.work`) of independent modules under `github.com/darkace1998/Dreadnought-Revival-project/<service>`.
+The repository is a Go workspace (`go.work`) of independent modules under `github.com/Dreadnought-Revival/Dreadnought-Revival-server/<service>`.
 
 ```bash
 go build ./mmogbrain          # build one service

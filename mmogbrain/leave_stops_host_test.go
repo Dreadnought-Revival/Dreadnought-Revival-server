@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/matchmaker"
+	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/matchmaker"
 	"github.com/sirupsen/logrus"
 )
 

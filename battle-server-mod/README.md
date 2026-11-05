@@ -30,7 +30,7 @@ executable, launched headless by `dn-dedicated` with `"<map>?listen" -server
 player's game client.
 
 The rule it does not break is the one that matters: a player still runs an
-unmodified client, and `dn-launcher/` is still the only thing we ask them to
+unmodified client, and the launcher ([Dreadnought-Revival-Launcher](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher)) is still the only thing we ask them to
 install. That rule is about what we require of players, not about what a server
 operator runs on their own host.
 

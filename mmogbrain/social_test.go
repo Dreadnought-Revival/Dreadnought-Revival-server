@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/db"
+	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/db"
 )
 
 // socialTestHub builds a hub backed by a throwaway database so friend state is

@@ -4,7 +4,7 @@ import (
 	"os"
 	"strconv"
 
-	dreadconfig "github.com/darkace1998/Dreadnought-Revival-project/shared/dreadgameconfig"
+	dreadconfig "github.com/Dreadnought-Revival/Dreadnought-Revival-server/shared/dreadgameconfig"
 )
 
 // Cosmetics in the store (2026-09-26).

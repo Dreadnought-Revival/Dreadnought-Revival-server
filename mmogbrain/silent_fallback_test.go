@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	dreadconfig "github.com/darkace1998/Dreadnought-Revival-project/shared/dreadgameconfig"
+	dreadconfig "github.com/Dreadnought-Revival/Dreadnought-Revival-server/shared/dreadgameconfig"
 )
 
 // A default that cannot be told apart from a real value in the log is not a

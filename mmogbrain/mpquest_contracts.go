@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/protocol"
+	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/protocol"
 )
 
 // The quest catalog the client's quest cycle needs (verified 2026-09-25).

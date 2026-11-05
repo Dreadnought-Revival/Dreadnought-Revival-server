@@ -9,7 +9,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	dreadconfig "github.com/darkace1998/Dreadnought-Revival-project/shared/dreadgameconfig"
+	dreadconfig "github.com/Dreadnought-Revival/Dreadnought-Revival-server/shared/dreadgameconfig"
 )
 
 // Market offers built from the original game's documented store: hero ships

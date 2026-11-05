@@ -78,10 +78,15 @@ else
 fi
 
 # The launcher is the one client-side component, and it is Windows-only
-# (//go:build windows). Cross-compiling it here is optional -- skip quietly if
-# the toolchain cannot.
+# (//go:build windows). It lives in its own repository since 2026-11-05
+# (github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher); built here only
+# when a checkout sits beside this one or LAUNCHER_DIR points at one, and
+# skipped quietly when there is none or the toolchain cannot cross-compile.
+LAUNCHER_DIR="${LAUNCHER_DIR:-$PROJECT_DIR/../Dreadnought-Revival-Launcher}"
 printf '    %-16s ' "dn-launcher.exe"
-if (cd "$PROJECT_DIR" && GOOS=windows GOARCH=amd64 go build -o "$RUN_DIR/dn-launcher.exe" ./dn-launcher) 2>/dev/null; then
+if [ ! -f "$LAUNCHER_DIR/go.mod" ]; then
+  echo "skipped (no launcher checkout at $LAUNCHER_DIR)"
+elif (cd "$LAUNCHER_DIR" && GOWORK=off GOOS=windows GOARCH=amd64 go build -o "$RUN_DIR/dn-launcher.exe" .) 2>/dev/null; then
   echo "OK (windows/amd64)"
 else
   echo "skipped (cross-compile unavailable)"

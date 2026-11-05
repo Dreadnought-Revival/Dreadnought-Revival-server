@@ -18,10 +18,10 @@ import (
 	"testing"
 	"time"
 
-	mmogdb "github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/db"
-	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/matchmaker"
-	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/protocol"
-	dreadconfig "github.com/darkace1998/Dreadnought-Revival-project/shared/dreadgameconfig"
+	mmogdb "github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/db"
+	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/matchmaker"
+	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/protocol"
+	dreadconfig "github.com/Dreadnought-Revival/Dreadnought-Revival-server/shared/dreadgameconfig"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/sirupsen/logrus"
 )

@@ -1,4 +1,4 @@
-module github.com/darkace1998/Dreadnought-Revival-project/gateway
+module github.com/Dreadnought-Revival/Dreadnought-Revival-server/gateway
 
 go 1.24
 

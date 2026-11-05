@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/protocol"
+	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/protocol"
 )
 
 // readyStatus is a match that has been up long enough for YA_Connect to fire.

@@ -1,6 +1,6 @@
 package main
 
-import "github.com/darkace1998/Dreadnought-Revival-project/shared/dreadgameconfig"
+import "github.com/Dreadnought-Revival/Dreadnought-Revival-server/shared/dreadgameconfig"
 
 // Ship XP has two id spaces, and they must not be mixed.
 //

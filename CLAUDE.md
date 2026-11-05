@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A community private server for the discontinued game **Dreadnought** (UE4 4.13.1, Steam App 835860). The goal is to run the **unmodified game client** against an emulated backend; the only thing a player installs is the replacement launcher (`dn-launcher/`).
+A community private server for the discontinued game **Dreadnought** (UE4 4.13.1, Steam App 835860). The goal is to run the **unmodified game client** against an emulated backend; the only thing a player installs is the replacement launcher (`dn-launcher`, in its own repository [Dreadnought-Revival-Launcher](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher)).
 
 **The line is drawn at the client, not at the binary.** Two halves of the project, two different rules:
 
@@ -18,7 +18,7 @@ Two things still worth keeping from the old rule, as *guidance* rather than a ga
 - Prefer **supplying data the engine would have had** over **fabricating a value that satisfies a check**. Registering the precast loadouts the host never received is the first kind; writing an arbitrary tier to get past a comparison is the second. The first tends to work; the second produced a pawn that could shoot but not move (`AGENT-CHAT C32.4`).
 - Keep host mods **optional at runtime** in one sense only: removing `wer.dll` must leave a working (if degraded) stack. Do NOT give every feature its own switch file (operator 2026-11-01; 38 were removed). Add a switch only for a genuinely risky change or a smoke test, and remove it once a live match has confirmed the feature. See `battle-server-mod/README.md`, "Switches".
 
-A Go workspace (`go.work`, Go 1.24+ required) of independent modules under `github.com/darkace1998/Dreadnought-Revival-project/<service>`.
+A Go workspace (`go.work`, Go 1.24+ required) of independent modules under `github.com/Dreadnought-Revival/Dreadnought-Revival-server/<service>`.
 
 ## Start here
 
@@ -148,7 +148,7 @@ Naming trap: the **`gateway` service** is the reverse proxy on :443, while **`GA
 
 There is no dedicated-server build of Dreadnought — the battle server is the ordinary client exe launched headless (`"<map>?listen" -server -nullrhi -unattended`). A `-dedicatedserver` switch does not exist in the binary.
 
-`admin-cli/` is the operator CLI; `dn-launcher/` is the Windows launcher replacement (cross-compiled). `shared/` holds common packages: `db`, logging, middleware, and `dreadgameconfig` (the extracted-game-data loader).
+`admin-cli/` is the operator CLI. The Windows launcher replacement (`dn-launcher`, cross-compiled) lives in its own repository, [Dreadnought-Revival-Launcher](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher), since 2026-11-05. `shared/` holds common packages: `db`, logging, middleware, and `dreadgameconfig` (the extracted-game-data loader).
 
 ### Conventions shared by all services
 

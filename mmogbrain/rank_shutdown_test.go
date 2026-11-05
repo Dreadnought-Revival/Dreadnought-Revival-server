@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/handlers"
-	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/protocol"
+	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/handlers"
+	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/protocol"
 )
 
 // The PR ladder is the server's own: rank N starts at the XP the server

@@ -6,8 +6,8 @@ import (
 	"os"
 	"sort"
 
-	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/db"
-	"github.com/darkace1998/Dreadnought-Revival-project/mmogbrain/handlers"
+	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/db"
+	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/handlers"
 )
 
 // provision-test-account: give an existing account everything, for testing.
