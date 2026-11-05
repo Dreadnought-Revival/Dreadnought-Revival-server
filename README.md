@@ -208,6 +208,17 @@ GOOS=windows go build -ldflags "-H windowsgui \
 The launcher's source, its icon resources and the rest of its build notes are in
 [Dreadnought-Revival-Launcher](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher).
 
+**The usual way since 2026-11-05: the server list.** The launcher's releases
+carry no server; they offer the servers in that repository's `serverlist.yaml`
+(host, ports and `certs/ca.crt`), which every launcher downloads again at
+start. To offer a server to players, add an entry there; after regenerating the
+CA, update its `ca_cert`. Players can also add a server by address: the
+gateway serves its CA at `/dn/ca.crt` (`CA_CERT`, default `certs/ca.crt`) for
+that. A CA made by `scripts/gen-certs.sh` since 2026-11-05 is name-limited to
+the game's names and `SERVER_NAME` (see the script; Windows' acceptance of it
+is not verified yet, `NAME_CONSTRAINTS=0` makes the old kind). The build flags
+above still work for a launcher with one server built in.
+
 `-H windowsgui` opens the desktop window with no console flashing up (the
 console flow opens its own console when it needs one). `defaultCA` builds the
 server's CA into the exe, so testers download **only `dn-launcher.exe`**. On

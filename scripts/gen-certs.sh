@@ -3,7 +3,9 @@
 # Install the CA cert on client machines to trust the private server's TLS.
 set -euo pipefail
 
-CERT_DIR="$(cd "$(dirname "$0")/.." && pwd)/certs"
+# CERT_DIR: where the certificates go (default certs/ of this checkout); set
+# it to try the script without touching a running server's certificates.
+CERT_DIR="${CERT_DIR:-$(cd "$(dirname "$0")/.." && pwd)/certs}"
 mkdir -p "$CERT_DIR"
 
 # The client validates the certificate against the address it dials, and for the
@@ -54,8 +56,38 @@ else
   fi
   echo "[*] Generating CA key and certificate..."
   openssl genrsa -out "$CERT_DIR/ca.key" 4096
+  # Name constraints (ADDED 2026-11-05). Players install this CA as a trusted
+  # ROOT, and an unconstrained root can vouch for ANY web site: whoever holds
+  # ca.key could impersonate a bank to every player who installed it. With
+  # nameConstraints the CA is only good for the names the game and launcher
+  # use -- sixfoot.live and its subdomains (the game's own host names),
+  # masterserver.local, gamemanager.local, localhost and SERVER_NAME -- so a
+  # certificate it signed for any other name is rejected by the verifier.
+  #
+  # IP addresses stay permitted (0.0.0.0/0): the server certificate carries
+  # the server's IPs, and the outside IP changes (KEEP_CA=1 re-issues the
+  # server certificate under the SAME CA; an IP list here would break that).
+  # The constraint defines both name types on purpose, so no verifier has to
+  # decide what an undefined one means.
+  #
+  # VERIFIED with OpenSSL only (a constrained CA, a server certificate
+  # inside the names and one outside, see the commit). NOT verified with
+  # Windows' own chain check, which is what the game's WinInet and the
+  # launcher's WebView2 use: test with one Windows PC before players
+  # install a CA made this way. NAME_CONSTRAINTS=0 makes the old,
+  # unconstrained kind. A different SERVER_NAME later needs a new CA.
+  CA_EXT=(-addext "basicConstraints=critical,CA:TRUE,pathlen:0" -addext "keyUsage=critical,keyCertSign,cRLSign")
+  if [ "${NAME_CONSTRAINTS:-1}" != "0" ]; then
+    NC="permitted;DNS:sixfoot.live,permitted;DNS:masterserver.local,permitted;DNS:gamemanager.local,permitted;DNS:localhost"
+    [ -n "$SERVER_NAME" ] && NC="${NC},permitted;DNS:${SERVER_NAME}"
+    NC="${NC},permitted;IP:0.0.0.0/0.0.0.0"
+    CA_EXT+=(-addext "nameConstraints=critical,${NC}")
+    echo "[*] CA limited to: ${NC//permitted;/}"
+  else
+    echo "[!] NAME_CONSTRAINTS=0: the CA can vouch for any name" >&2
+  fi
   openssl req -new -x509 -days 3650 -key "$CERT_DIR/ca.key" \
-    -out "$CERT_DIR/ca.crt" \
+    -out "$CERT_DIR/ca.crt" "${CA_EXT[@]}" \
     -subj "/C=US/ST=Private/L=Server/O=Dreadnought Private Server/CN=Dreadnought PS CA"
 fi
 

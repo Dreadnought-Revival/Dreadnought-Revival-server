@@ -277,7 +277,7 @@ echo "=== Starting services ==="
 start auth-server "$RUN_DIR/auth-server"
 start master-server "$RUN_DIR/master-server"
 start_control_plane
-TLS_CERT="$ROOT/certs/server.crt" TLS_KEY="$ROOT/certs/server.key" \
+TLS_CERT="$ROOT/certs/server.crt" TLS_KEY="$ROOT/certs/server.key" CA_CERT="$ROOT/certs/ca.crt" \
     CRASH_REPORT_DIR="$RUN_DIR/crash-reports" start gateway "$RUN_DIR/gateway"
 start mmogbrain "$RUN_DIR/mmogbrain"
 start legacy-api "$RUN_DIR/legacy-api"
