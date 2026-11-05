@@ -1269,6 +1269,7 @@ static tGameModeTimer g_origGameModeTimer = nullptr;
 
 static void PlayersTick(uint8_t *gm);
 static void ClassTimeTick(uint8_t *gm);
+static void SpeedCheckTick(uint8_t *gm);
 static void NetStatsTick(uint8_t *gm);
 
 // Bots in every multiplayer mode. Added 2026-09-28 at the operator's request. The spawner only fills a team from the
@@ -1361,6 +1362,7 @@ static void __fastcall HookGameModeTimer(void *gameMode) {
   PlayersTick(gm);
   EscalationTick(gm);
   ClassTimeTick(gm);
+  SpeedCheckTick(gm);
   NetStatsTick(gm);
   FlushPendingEomStats();
 }
@@ -4048,8 +4050,8 @@ static void __fastcall HookNpcApplyControlValues(void *ctrl, void *valuesClass) 
 }
 
 // ---------------------------------------------------------------------------
-// Command ship gun damage, measured (on; dn_host_no_ons_gun_log.txt turns it
-// off)
+// Command ship gun damage, measured (on; dn_host_no_ons_gun_log.txt turns the
+// log off -- the hook itself stays, for the fair-play damage check)
 //
 // Tester 2026-10-30: "Legendary Command Ship hits way weaker now. Though it
 // may have longer range of around 5km, while before it was about 3km?" The
@@ -4067,6 +4069,7 @@ static void __fastcall HookNpcApplyControlValues(void *ctrl, void *valuesClass) 
 #define RVA_PAWN_TAKE_DAMAGE 0x59BAF0
 typedef float(__fastcall *tPawnTakeDamage)(void *pawn, float damage, void *evt, void *instigator, void *causer);
 static tPawnTakeDamage g_origPawnTakeDamage = nullptr;
+static bool g_onsGunLog = true; // dn_host_no_ons_gun_log.txt clears it
 
 struct OnsGunBand {
   int hits;
@@ -4098,9 +4101,13 @@ static void FlushOnsGunLog() {
   memset(s_onsGunMaxDist, 0, sizeof(s_onsGunMaxDist));
 }
 
+static void DamageCheckHit(void *victimPawn, float asked, float dealt, void *instigator);
+
 static float __fastcall HookPawnTakeDamage(void *pawn, float damage, void *evt, void *instigator, void *causer) {
   float dealt = g_origPawnTakeDamage(pawn, damage, evt, instigator, causer);
-  if (!instigator || !pawn)
+  if (pawn)
+    DamageCheckHit(pawn, damage, dealt, instigator); // fair-play damage counters
+  if (!g_onsGunLog || !instigator || !pawn)
     return dealt;
   __try {
     uint8_t *shooter = *(uint8_t **)((uint8_t *)instigator + OFF_CONTROLLER_PAWN);
@@ -4442,6 +4449,8 @@ typedef void(__fastcall *tProcessEventVirt)(void *obj, void *fn, void *parms);
 #define OFF_PRI_ASSISTS 0x858
 #define OFF_PRI_DAMAGE_WEAPONS 0x908
 #define OFF_PRI_DAMAGE_ABILITIES 0x90C
+#define OFF_PRI_DAMAGE_RECEIVED 0x910     // m_totalDamageReceived (SDK)
+#define OFF_PRI_RAW_DAMAGE_RECEIVED 0x918 // m_rawDamageReceivedTotal (SDK)
 #define OFF_PRI_TEAM 0x940
 // Statistics screen figures (2026-10-15), from the SDK dump like the rest:
 // m_score IntProperty, m_totalHealingDone FloatProperty. NOT verified live.
@@ -4774,9 +4783,11 @@ static bool TakeEventTotals(void *pri, int64_t *xp, int64_t *credits, int *event
   return found;
 }
 
+static void TakeFairPlayChecks(const char *pid, uint8_t *pc, uint8_t *pri, char *path, size_t pathLen);
+
 static void ReportMatchResult(void *orbitComp) {
   char pid[80], match[96], path[3584], body[2048];
-  uint8_t *priOut = nullptr;
+  uint8_t *priOut = nullptr, *pcOut = nullptr;
   int kills = 0, deaths = 0, assists = 0, team = 0, result = 0, score = 0;
   const char *teamSource = "none";
   float damage = 0, healing = 0;
@@ -4797,6 +4808,7 @@ static void ReportMatchResult(void *orbitComp) {
       return;
     }
     priOut = pri;
+    pcOut = pc;
     kills = *(int32_t *)(pri + OFF_PRI_KILLS);
     deaths = *(int32_t *)(pri + OFF_PRI_DEATHS);
     assists = *(int32_t *)(pri + OFF_PRI_ASSISTS);
@@ -4914,6 +4926,9 @@ static void ReportMatchResult(void *orbitComp) {
     size_t pl = strlen(path);
     _snprintf_s(path + pl, sizeof(path) - pl, _TRUNCATE, "&score=%d&heal=%d&ct=%s", score, (int)healing, ct);
   }
+  // Fair-play checks: speed and damage counters (see TakeFairPlayChecks).
+  if (priOut)
+    TakeFairPlayChecks(pid, pcOut, priOut, path, sizeof(path));
   bool ok = HttpGetLoopback(path, body, sizeof(body));
   if (ok && priOut)
     WriteEomRewards(priOut, body, match);
@@ -5345,6 +5360,331 @@ static void ClassTimeTick(uint8_t *gm) {
     }
   } __except (EXCEPTION_EXECUTE_HANDLER) {
   }
+}
+
+// ---------------------------------------------------------------------------
+// Fair-play checks: ship speed and damage counters (on; added 2026-11-05)
+//
+// Operator 2026-11-05, after a player was called a hacker: "add a speed check
+// ... and a damage received check, maybe the server has some damage counters
+// wrong". Nothing here acts on a player: it measures, logs, and reports the
+// figures with the match result (mmogbrain stores them per match).
+//
+// Speed. The host simulates every ship from its inputs (see "Player ship
+// physics"), so what it measures is what the match actually saw. Once a
+// second (HookGameModeTimer) every human's ship and every bot's ship (the
+// combat scene manager's NPC list, as NpcAiStartTick reads it) is sampled:
+// the distance its root component moved since the last sample over the time
+// between them. A single second faster than SPEED_JUMP_UPS is a JUMP (respawn,
+// the orbit teleport, a warp ability) and counted apart; otherwise the
+// sustained speed is the lowest of three consecutive samples, so one fast
+// second never counts. Ships have no top-speed field (UYVehicleMovementComp
+// moves them by forces: m_throttleForces / m_dragForces), so the yardstick is
+// the bots flying the same EYShipClass in the same match. Scale, from the
+// Conquest speed diagnostic (host logs 2026-10-29): AI ships average 20-500
+// units/s over 30 s. GUESS thresholds: flagged when a human's sustained
+// maximum exceeds 1.5 x the bots' of the class (with at least
+// SPEED_MIN_BOT_SAMPLES bot samples), or SPEED_FLAG_UPS outright.
+//
+// Damage. Every hit goes through YPawn::TakeDamage (0x59BAF0, hooked for the
+// command ship gun log; float damage, FDamageEvent&, instigating controller,
+// causer -> damage dealt). Per human controller it sums what the player dealt
+// (instigator = the player's controller, victim not the player's own ship)
+// and what the player's ship received, the amount asked and the amount
+// dealt. At the match result these are set against the player state's own
+// counters, the ones that are reported: m_totalDamageDealtWithWeapons +0x908
+// + WithAbilities +0x90C, m_totalDamageReceived +0x910, m_rawDamageReceivedTotal
+// +0x918 (SDK dump DreadGame_Classes.h AYPlayerReplicationInfo). GUESS:
+// counters "disagree" outside 0.8-1.25x once either side passes 10000. NOT
+// verified live: whether the PRI counts damage before or after shields; the
+// first matches will show it.
+#define SPEED_JUMP_UPS 3000.0f
+#define SPEED_FLAG_UPS 2000.0f
+#define SPEED_BOT_FACTOR 1.5f
+#define SPEED_MIN_BOT_SAMPLES 20
+#define CHECK_SLOTS 64
+#define CHECK_CLASSES 21 // EYShipClass 0..20
+
+struct SpeedClassStat {
+  int samples;     // valid (non-jump) one-second samples
+  float max1;      // fastest single second
+  float max3;      // fastest sustained (lowest of three in a row)
+};
+struct HumanCheck {
+  void *pc;
+  SpeedClassStat cls[CHECK_CLASSES];
+  int jumps;
+  float maxJump;   // largest one-second displacement counted as a jump
+  // damage, from TakeDamage
+  int hitsDealt, hitsTaken;
+  double dealt, dealtAsked, dealtToHumans;
+  double taken, takenAsked, takenNoInstigator;
+};
+static HumanCheck g_humanChecks[CHECK_SLOTS] = {};
+static SpeedClassStat g_botSpeed[CHECK_CLASSES] = {};
+static void *g_checksGM = nullptr;
+static SRWLOCK g_checksLock = SRWLOCK_INIT;
+
+static HumanCheck *HumanCheckFor(void *pc, bool create) {
+  HumanCheck *freeSlot = nullptr;
+  for (auto &h : g_humanChecks) {
+    if (h.pc == pc)
+      return &h;
+    if (!freeSlot && !h.pc)
+      freeSlot = &h;
+  }
+  if (create && freeSlot) {
+    *freeSlot = HumanCheck{};
+    freeSlot->pc = pc;
+    return freeSlot;
+  }
+  return nullptr;
+}
+
+static bool IsHumanController(void *ctrl) {
+  return ctrl && IsReadable((uint8_t *)ctrl + OFF_PC_NETCONNECTION, 8) &&
+         ClassChainContains((UObjectMin *)ctrl, "PlayerController") &&
+         *(void **)((uint8_t *)ctrl + OFF_PC_NETCONNECTION);
+}
+
+// From HookPawnTakeDamage, for every hit.
+static void DamageCheckHit(void *victimPawn, float asked, float dealt, void *instigator) {
+  if (!(asked >= 0 && asked < 1e7f) || !(dealt >= -1e7f && dealt < 1e7f))
+    return;
+  __try {
+    void *victimCtrl = IsReadable((uint8_t *)victimPawn + OFF_PAWN_CONTROLLER, 8)
+                           ? *(void **)((uint8_t *)victimPawn + OFF_PAWN_CONTROLLER) : nullptr;
+    bool victimHuman = IsHumanController(victimCtrl);
+    bool shooterHuman = instigator && instigator != victimCtrl && IsHumanController(instigator);
+    if (!victimHuman && !shooterHuman)
+      return;
+    AcquireSRWLockExclusive(&g_checksLock);
+    if (shooterHuman)
+      if (HumanCheck *h = HumanCheckFor(instigator, true)) {
+        h->hitsDealt++;
+        h->dealt += dealt;
+        h->dealtAsked += asked;
+        if (victimHuman)
+          h->dealtToHumans += dealt;
+      }
+    if (victimHuman)
+      if (HumanCheck *h = HumanCheckFor(victimCtrl, true)) {
+        h->hitsTaken++;
+        h->taken += dealt;
+        h->takenAsked += asked;
+        if (!instigator)
+          h->takenNoInstigator += dealt;
+      }
+    ReleaseSRWLockExclusive(&g_checksLock);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
+}
+
+// One ship's last samples, by pawn (a new ship starts a new chain).
+struct SpeedTrack {
+  void *pawn;
+  void *pc;          // the human's controller; nullptr for a bot
+  float pos[3];
+  DWORD at;
+  float prev[2];     // the two samples before this one (0 = none)
+  bool seen;
+};
+static SpeedTrack g_speedTracks[160] = {};
+
+static void AddSpeedSample(SpeedClassStat &s, float v, const float prev[2]) {
+  s.samples++;
+  if (v > s.max1)
+    s.max1 = v;
+  if (prev[0] > 0 && prev[1] > 0) {
+    float sustained = v < prev[0] ? v : prev[0];
+    if (prev[1] < sustained)
+      sustained = prev[1];
+    if (sustained > s.max3)
+      s.max3 = sustained;
+  }
+}
+
+static void SampleShip(void *pawn, void *pc, DWORD now) {
+  float pos[3];
+  if (!pawn || !ActorLocation(pawn, pos) || !IsReadable((uint8_t *)pawn + OFF_PAWN_SHIP_CLASS, 1))
+    return;
+  int cls = ((uint8_t *)pawn)[OFF_PAWN_SHIP_CLASS];
+  SpeedTrack *t = nullptr, *freeT = nullptr;
+  for (auto &x : g_speedTracks) {
+    if (x.pawn == pawn) { t = &x; break; }
+    if (!freeT && !x.pawn) freeT = &x;
+  }
+  if (!t) {
+    if (!freeT)
+      return;
+    t = freeT;
+    *t = SpeedTrack{};
+    t->pawn = pawn;
+    t->pc = pc;
+    memcpy(t->pos, pos, sizeof(pos));
+    t->at = now;
+    t->seen = true;
+    return;
+  }
+  t->seen = true;
+  DWORD dt = now - t->at;
+  float dx = pos[0] - t->pos[0], dy = pos[1] - t->pos[1], dz = pos[2] - t->pos[2];
+  float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+  memcpy(t->pos, pos, sizeof(pos));
+  t->at = now;
+  if (dt < 500 || dt > 2500 || cls <= 0 || cls >= CHECK_CLASSES) {
+    t->prev[0] = t->prev[1] = 0;
+    return;
+  }
+  float v = dist * 1000.0f / (float)dt;
+  if (!(v >= 0 && v < 1e7f))
+    return;
+  AcquireSRWLockExclusive(&g_checksLock);
+  if (v > SPEED_JUMP_UPS) {
+    if (pc)
+      if (HumanCheck *h = HumanCheckFor(pc, true)) {
+        h->jumps++;
+        if (dist > h->maxJump)
+          h->maxJump = dist;
+      }
+    t->prev[0] = t->prev[1] = 0;
+  } else {
+    if (pc) {
+      if (HumanCheck *h = HumanCheckFor(pc, true))
+        AddSpeedSample(h->cls[cls], v, t->prev);
+    } else {
+      AddSpeedSample(g_botSpeed[cls], v, t->prev);
+    }
+    t->prev[1] = t->prev[0];
+    t->prev[0] = v;
+  }
+  ReleaseSRWLockExclusive(&g_checksLock);
+}
+
+// Once a second, while the match runs.
+static void SpeedCheckTick(uint8_t *gm) {
+  __try {
+    if (!IsReadable(gm + OFF_GM_GAMESTATE, 8))
+      return;
+    uint8_t *gs = *(uint8_t **)(gm + OFF_GM_GAMESTATE);
+    if (!gs || !IsReadable(gs + OFF_GS_MATCH_RUNNING, 2) || !gs[OFF_GS_MATCH_RUNNING] || gs[OFF_GS_MATCH_OVER])
+      return;
+    if (g_checksGM != gm) { // a new match on this host: start the bots' yardstick afresh
+      g_checksGM = gm;
+      AcquireSRWLockExclusive(&g_checksLock);
+      memset(g_botSpeed, 0, sizeof(g_botSpeed));
+      ReleaseSRWLockExclusive(&g_checksLock);
+      memset(g_speedTracks, 0, sizeof(g_speedTracks));
+      Logf("fair play: speed check running for game mode %p -- every human's and bot's ship sampled once a "
+           "second; damage counted through YPawn::TakeDamage%s",
+           gm, g_origPawnTakeDamage ? "" : " (NOT hooked: damage check off)");
+    }
+    DWORD now = GetTickCount();
+    for (auto &x : g_speedTracks)
+      x.seen = false;
+    if (IsReadable(gs + OFF_GS_PLAYER_ARRAY, 16)) {
+      uint8_t **arr = *(uint8_t ***)(gs + OFF_GS_PLAYER_ARRAY);
+      int count = *(int32_t *)(gs + OFF_GS_PLAYER_ARRAY + 8);
+      if (count > 0 && count <= 256 && IsReadable(arr, (size_t)count * 8))
+        for (int i = 0; i < count; ++i) {
+          uint8_t *pri = arr[i];
+          if (!IsReadable(pri, OFF_ACTOR_OWNER + 8))
+            continue;
+          uint8_t *pc = *(uint8_t **)(pri + OFF_ACTOR_OWNER);
+          if (!IsHumanController(pc) || !IsReadable(pc + OFF_CONTROLLER_PAWN, 8))
+            continue;
+          SampleShip(*(void **)(pc + OFF_CONTROLLER_PAWN), pc, now);
+        }
+    }
+    uint8_t *sm = (uint8_t *)((tGetSceneManager)(g_base + RVA_COMBAT_SCENE_MANAGER))();
+    if (sm && IsReadable(sm + OFF_SCENE_NPCS, 16)) {
+      uint8_t *data = *(uint8_t **)(sm + OFF_SCENE_NPCS);
+      int n = *(int32_t *)(sm + OFF_SCENE_NPCS_COUNT);
+      if (data && n > 0 && n <= 4096 && IsReadable(data, (size_t)n * NPC_SPAWN_SIZE))
+        for (int i = 0; i < n; ++i) {
+          void *pawn = ((tWeakGet)(g_base + RVA_WEAK_PTR_GET))(data + (size_t)i * NPC_SPAWN_SIZE + OFF_SCENE_NPC_PAWN);
+          if (pawn && !IsHumanShip((uint8_t *)pawn))
+            SampleShip(pawn, nullptr, now);
+        }
+    }
+    for (auto &x : g_speedTracks)
+      if (x.pawn && !x.seen)
+        x = SpeedTrack{}; // destroyed, or no longer flown
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("fair play: EXCEPTION 0x%08X in the speed tick", GetExceptionCode());
+  }
+}
+
+// At the player's match result: logs the checks, appends them to the result
+// path, and clears the player's slot. pri is the player's state (the PRI's
+// own counters are what the match result reports).
+static void TakeFairPlayChecks(const char *pid, uint8_t *pc, uint8_t *pri, char *path, size_t pathLen) {
+  HumanCheck h{};
+  SpeedClassStat bots[CHECK_CLASSES];
+  AcquireSRWLockExclusive(&g_checksLock);
+  if (HumanCheck *p = HumanCheckFor(pc, false)) {
+    h = *p;
+    *p = HumanCheck{};
+  }
+  memcpy(bots, g_botSpeed, sizeof(bots));
+  ReleaseSRWLockExclusive(&g_checksLock);
+
+  float priDealt = 0, priTaken = 0, priRawTaken = 0;
+  __try {
+    priDealt = *(float *)(pri + OFF_PRI_DAMAGE_WEAPONS) + *(float *)(pri + OFF_PRI_DAMAGE_ABILITIES);
+    priTaken = *(float *)(pri + OFF_PRI_DAMAGE_RECEIVED);
+    priRawTaken = *(float *)(pri + OFF_PRI_RAW_DAMAGE_RECEIVED);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
+  if (!(priDealt >= 0 && priDealt < 1e9f)) priDealt = 0;
+  if (!(priTaken >= 0 && priTaken < 1e9f)) priTaken = 0;
+  if (!(priRawTaken >= 0 && priRawTaken < 1e9f)) priRawTaken = 0;
+
+  // Speed, per class flown: "class.sustained.fastest.bot_sustained.bot_samples".
+  char spd[CHECK_CLASSES * 40 + 8];
+  size_t o = 0;
+  spd[0] = 0;
+  bool speedFlag = false;
+  char speedWhy[160] = "";
+  for (int c = 1; c < CHECK_CLASSES; ++c) {
+    const SpeedClassStat &s = h.cls[c];
+    if (!s.samples)
+      continue;
+    const SpeedClassStat &b = bots[c];
+    o += _snprintf_s(spd + o, sizeof(spd) - o, _TRUNCATE, "%s%d.%d.%d.%d.%d", o ? "," : "", c, (int)s.max3,
+                     (int)s.max1, (int)b.max3, b.samples);
+    bool overBots = b.samples >= SPEED_MIN_BOT_SAMPLES && b.max3 > 0 && s.max3 > SPEED_BOT_FACTOR * b.max3;
+    bool overAll = s.max3 > SPEED_FLAG_UPS;
+    if ((overBots || overAll) && !speedFlag) {
+      speedFlag = true;
+      _snprintf_s(speedWhy, sizeof(speedWhy), _TRUNCATE, "class %d sustained %.0f u/s vs bots %.0f (%d samples)",
+                  c, s.max3, b.max3, b.samples);
+    }
+  }
+  // Damage: the player state's counters against what TakeDamage measured.
+  auto disagree = [](double a, double b) {
+    if (a < 10000 && b < 10000)
+      return false;
+    if (a <= 0 || b <= 0)
+      return true;
+    double r = a / b;
+    return r < 0.8 || r > 1.25;
+  };
+  bool dealtFlag = disagree(priDealt, h.dealt), takenFlag = disagree(priTaken, h.taken);
+  Logf("fair play: %s speed [%s] jumps %d (largest %.0f units in a second)%s%s; damage dealt: reported %.0f, "
+       "measured %.0f (asked %.0f, %d hits, %.0f to humans)%s; received: reported %.0f (raw %.0f), measured %.0f "
+       "(asked %.0f, %d hits, %.0f without instigator)%s",
+       pid, spd, h.jumps, h.maxJump, speedFlag ? " -- FLAG speed: " : "", speedFlag ? speedWhy : "", priDealt,
+       h.dealt, h.dealtAsked, h.hitsDealt, h.dealtToHumans, dealtFlag ? " -- FLAG dealt counters disagree" : "",
+       priTaken, priRawTaken, h.taken, h.takenAsked, h.hitsTaken, h.takenNoInstigator,
+       takenFlag ? " -- FLAG received counters disagree" : "");
+  size_t pl = strlen(path);
+  _snprintf_s(path + pl, pathLen - pl, _TRUNCATE,
+              "&chk_spd=%s&chk_jumps=%d&chk_dmg_measured=%lld&chk_dmg_hits=%d&chk_recv=%lld&chk_recv_raw=%lld"
+              "&chk_recv_measured=%lld&chk_recv_hits=%d&chk_flags=%s%s%s",
+              spd, h.jumps, (long long)h.dealt, h.hitsDealt, (long long)priTaken, (long long)priRawTaken,
+              (long long)h.taken, h.hitsTaken, speedFlag ? "speed." : "", dealtFlag ? "dealt." : "",
+              takenFlag ? "received." : "");
 }
 
 static bool SwitchOn(const char *envName, const char *markerFile);
@@ -10285,9 +10625,12 @@ static DWORD WINAPI Startup(LPVOID) {
   if (!SwitchOn("DN_HOST_NO_ONS_ABILITY_SLOTS", "dn_host_no_ons_ability_slots.txt"))
     InstallSwitchedHook("onslaught ability slots (NPC controller values)", RVA_NPC_APPLY_CONTROL_VALUES,
                         (void *)&HookNpcApplyControlValues, (void **)&g_origNpcApplyControlValues);
-  if (!SwitchOn("DN_HOST_NO_ONS_GUN_LOG", "dn_host_no_ons_gun_log.txt"))
-    InstallSwitchedHook("command ship gun log (YPawn::TakeDamage)", RVA_PAWN_TAKE_DAMAGE,
-                        (void *)&HookPawnTakeDamage, (void **)&g_origPawnTakeDamage);
+  // Always hooked since 2026-11-05: the fair-play damage check rides on it;
+  // the switch now only silences the command ship gun log.
+  g_onsGunLog = !SwitchOn("DN_HOST_NO_ONS_GUN_LOG", "dn_host_no_ons_gun_log.txt");
+  InstallSwitchedHook(g_onsGunLog ? "fair-play damage check + command ship gun log (YPawn::TakeDamage)"
+                                  : "fair-play damage check (YPawn::TakeDamage; gun log off)",
+                      RVA_PAWN_TAKE_DAMAGE, (void *)&HookPawnTakeDamage, (void **)&g_origPawnTakeDamage);
 
   if (HostIsTurboTDM())
     g_featsTurbo = true;

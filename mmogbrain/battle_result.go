@@ -357,6 +357,12 @@ func battleResultHandler(w http.ResponseWriter, r *http.Request) {
 			// The Statistics screen's score, healing, double kills, first
 			// strikes and time per ship type (match_statistics.go).
 			stats := matchStatValues(q, eventCounts, scoringMode, res.ships, matchPlaySeconds(database, match))
+			// The mod's fair-play checks, stored beside them (fair_play_checks.go).
+			checks, flags := fairPlayCheckStats(q)
+			for k, v := range checks {
+				stats[k] = v
+			}
+			logFairPlayFlags(match, pid, flags, checks)
 			recordMatchStats(database, match, pid, stats)
 			logrus.WithFields(logrus.Fields{"match": match, "player": pid, "stats": stats,
 				"from_mod": q.Has("ct")}).Info("statistics: match recorded")

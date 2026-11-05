@@ -851,7 +851,10 @@ Log for an applied class: `onslaught abilities: <class> applied to <ship>
 (caller RVA 0x…) -- fire list slots -1,-1,-1,-1 -> 0,1,2,3 (4 of 4 found), max
 fire distance N`.
 
-## Command ship gun log (on; `dn_host_no_ons_gun_log.txt` turns it off)
+## Command ship gun log (on; `dn_host_no_ons_gun_log.txt` turns the log off)
+
+Since 2026-11-05 the `YPawn::TakeDamage` hook is installed on every host
+whatever the switch says: the fair-play damage check (below) uses it.
 
 A diagnostic for the tester's report that the Legendary command ship "hits way
 weaker" from farther away. The cooked data points the other way.
@@ -1433,6 +1436,45 @@ score-based daily contracts. The offsets are NOT verified live.
 
 Expected log: the `match result:` line now shows `score N healing N`; in
 mmogbrain's log, `statistics: match recorded` with `from_mod=true`.
+
+## Fair-play checks: ship speed and damage counters (on; added 2026-11-05)
+
+Asked for after a player was called a hacker, and because the damage figures
+themselves might be wrong. The checks only measure and report; nothing acts on
+a player.
+
+- **Speed.** The host simulates every ship from its inputs (see "Player ship
+  physics"), so its positions are what the match saw. Once a second the
+  game-mode timer samples every human's ship (PlayerArray -> controller
+  `+0x3C8`) and every bot's ship (the combat scene manager's NPC list, as the
+  NPC AI start tick reads it): distance moved over the time between samples.
+  A second faster than 3000 units/s is a **jump** (respawn, orbit teleport, a
+  warp ability), counted apart. The **sustained** speed is the lowest of three
+  samples in a row, so one fast second never counts. Ships have no top-speed
+  field (`UYVehicleMovementComp` moves them by forces), so the yardstick is the
+  bots of the same EYShipClass in the same match. For scale, the Conquest speed
+  log showed AI ships averaging 20-500 units/s over 30 s. Flagged (GUESS
+  thresholds): sustained above 1.5x the bots' (with at least 20 bot samples),
+  or above 2000 units/s.
+- **Damage.** `YPawn::TakeDamage` (`0x59BAF0`) sums, per human, the damage the
+  player dealt (instigator = the player's controller) and the damage the
+  player's ship received, asked and dealt. At the match result these are set
+  against the player state's own counters: dealt with weapons `+0x908` plus
+  abilities `+0x90C` (what `damage=` reports), received `+0x910`, raw received
+  `+0x918` (SDK dump). Flagged (GUESS) when the two disagree by more than
+  0.8-1.25x once either passes 10000. NOT verified live: whether the player
+  state counts damage before or after shields.
+
+Reported with the match result as `chk_spd=class.sustained.fastest.bot_sustained.bot_samples,...`,
+`chk_jumps`, `chk_dmg_measured`, `chk_dmg_hits`, `chk_recv`, `chk_recv_raw`,
+`chk_recv_measured`, `chk_recv_hits` and `chk_flags`. mmogbrain stores them
+per match in `battle_result_stats` (`check_...`) and warns
+`fair play: match result flagged` (`mmogbrain/fair_play_checks.go`).
+
+Expected log, once per match: `fair play: speed check running for game mode
+...`; per player at the match result: `fair play: <pid> speed [...] jumps N
+...; damage dealt: reported R, measured M ...; received: ...`, with
+`-- FLAG ...` when a check trips.
 
 ## Turbo TDM modifiers (TurboTDM hosts only, added 2026-10-16)
 
