@@ -2,8 +2,17 @@
 
 [![GitHub](https://img.shields.io/badge/GitHub-Dreadnought--Revival/Dreadnought--Revival--server-blue?logo=github)](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server)
 [![Launcher](https://img.shields.io/badge/GitHub-Dreadnought--Revival/Dreadnought--Revival--Launcher-blue?logo=github)](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher)
+[![Website](https://img.shields.io/badge/GitHub-Dreadnought--Revival/Dreadnought--Revival--Page-blue?logo=github)](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Page)
 
 > Moved on 2026-11-05 from `darkace1998/Dreadnought-Revival-project` (history kept). The launcher now lives in its own repository, [Dreadnought-Revival-Launcher](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher). Issue and PR numbers (`#67`, `#80`, ...) in commits and docs before the move refer to the [old repository](https://github.com/darkace1998/Dreadnought-Revival-project).
+
+The project is three repositories under [Dreadnought-Revival](https://github.com/Dreadnought-Revival):
+
+| Repository | What |
+| --- | --- |
+| [Dreadnought-Revival-server](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server) | this one: the backend services, the battle-server mod, data and docs |
+| [Dreadnought-Revival-Launcher](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher) | the Windows launcher, the only thing a player installs |
+| [Dreadnought-Revival-Page](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Page) | the project website (in progress) |
 
 A community-operated private server for the discontinued game **Dreadnought** (UE4 4.13.1, Steam App 835860). The goal is to run the **unmodified game client** against our own backend: everything is emulated server-side, and the only thing a player installs is a replacement launcher.
 
