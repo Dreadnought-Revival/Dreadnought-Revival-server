@@ -2,7 +2,7 @@
 //
 // Dreadnought never shipped a dedicated-server build. The battle server is the
 // ordinary client executable launched as a headless listen server, which is the
-// method the Dreadnought-Revival-project's game-manager established by
+// method this repository's game-manager established by
 // experiment; this tool uses the identical argv. See internal/server for the
 // details and for what the non-working variants got wrong.
 //
