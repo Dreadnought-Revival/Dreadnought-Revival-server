@@ -12,6 +12,25 @@ deploy, every log path, the operator test cycle), `dreadnought-mmog-responses`
 `dreadnought-verify`. They exist so a new session does not re-derive what past
 sessions paid live test cycles for.
 
+## Repositories (since 2026-11-05)
+
+- **Server** (this repo): https://github.com/Dreadnought-Revival/Dreadnought-Revival-server,
+  branch `main`, remote `origin`. Module paths
+  `github.com/Dreadnought-Revival/Dreadnought-Revival-server/<service>`.
+- **Launcher**: https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher,
+  checked out beside this repo as `../Dreadnought-Revival-Launcher` (`main`).
+  It was `dn-launcher/` here until 2026-11-05; its history moved with it.
+  `scripts/setup.sh` builds `run/dn-launcher.exe` from that checkout (or
+  `LAUNCHER_DIR`) and skips quietly without one. Launcher changes are committed
+  and pushed in the launcher repo, not here.
+- **Website**: https://github.com/Dreadnought-Revival/Dreadnought-Revival-Page.
+- The old `darkace1998/Dreadnought-Revival-project` is **archived** (remote
+  `old`, read-only). Issue/PR numbers in older commits and docs (`#67`, `#80`)
+  refer to it; GitHub cannot move issues to a repo with another owner.
+- Do not "fix" the JWT issuer `"Dreadnought-Revival-project"`
+  (`auth-server/jwt/jwt.go`, `mmogbrain/protocol/pid.go`): it is checked on every
+  token, so changing it signs everyone out.
+
 ## Critical Gotchas
 
 **Tests & lint must run per-module, not from workspace root:**
@@ -63,10 +82,12 @@ per-module for real results: `cd mmogbrain && golangci-lint run ./...`. There is
 a known pre-existing backlog in `mmogbrain`/`shared`; don't add to it, and don't
 expect a clean run.
 
-**Test status (2026-08-02):** all modules pass — `mmogbrain` (21 test files in
-the root package, 3 more in `matchmaker`), `shared/dreadgameconfig`, `legacy-api/handlers`,
-`gateway`, `game-manager/spawner`, and `dn-dedicated/internal/server` (with
-`GOWORK=off`). `go vet` is clean everywhere and must stay that way.
+**Test status (2026-11-05):** `go build`, `go vet` and `go test` pass in every
+module — `shared`, `auth-server`, `legacy-api`, `master-server`, `game-manager`,
+`gateway`, `admin-cli`, `mmogbrain` (incl. `handlers`, `matchmaker`, `protocol`),
+and `dn-dedicated` (with `GOWORK=off`). The launcher's tests moved to its own
+repo (Windows-only: `GOOS=windows go vet ./...` there). `go vet` is clean
+everywhere and must stay that way.
 
 ## Architecture
 
@@ -134,13 +155,16 @@ cd battle-server-mod && nice -n 19 bash build-linux.sh   # -> build-linux/dn_hos
   `wer.dll` (atomic; running hosts keep their copy). Keep a backup.
 - **After any mod change**, refresh `/root/projects/output/wer.dll` and
   `/root/projects/output/battle-server-mod-src.zip`.
-- **Every new host feature gets an off switch** (`dn_host_no_*.txt` beside the
-  exe) and a section in `battle-server-mod/README.md`.
+- **No switch file per feature** (operator, 2026-11-01; 38 were removed). Add a
+  `dn_host_*.txt` switch only for a genuinely risky change or a smoke test, and
+  drop it once a live match has confirmed the feature. Every feature still gets
+  a section in `battle-server-mod/README.md`.
 
 ## Running the game client yourself
 
 `bash scripts/wine-client.sh [seconds] [output-log]` runs the real client against
-this stack on this Linux box: mints a token with dn-launcher (`DN_PLAYER_ID`, so
+this stack on this Linux box: mints a token with dn-launcher (`run/dn-launcher.exe`,
+built by `setup.sh` from the launcher repo; `DN_PLAYER_ID`, so
 it auto-registers a stable test account), launches the client, dismisses the
 title screen with xdotool, sits in the hangar, exits. About four minutes per run.
 This is the A/B loop — change a response, restart mmogbrain, run it, read the log
@@ -213,15 +237,16 @@ side's entries, and mark every claim `verified` or `suspected`.
 
 ## Key Files
 
-- `go.work` — 9 modules; `dn-dedicated` is not one of them
+- `go.work` — 8 modules; `dn-dedicated` is not one of them (and the launcher
+  is no longer here)
 - `scripts/setup.sh` — build + certs + secrets, one shot
 - `scripts/start-services.sh` / `stop-services.sh` — the shipped launcher/stopper
 - `scripts/wine-client.sh` — run the real client against this stack, locally
 - `scripts/secrets.env.example` — annotated configuration template
 - `run/secrets.env` — runtime secrets (gitignored)
 - `AGENT-CHAT.md` — the client↔server channel
-- `docs/battle-server-data-path.md` — how a battle server gets its data, and why
-  a player cannot spawn (the current hard blocker)
+- `docs/battle-server-data-path.md` — how a battle server gets its data (the
+  reason `battle-server-mod/` exists; the spawn blocker it describes is solved)
 - `docs/client-data-reference.md` — extracted item/ship id maps and naming rules
 - `docs/client-data-validation.md` — audit of every id the server emits
 
@@ -265,30 +290,11 @@ Debug switches worth knowing: `DN_CONTROL_PLANE`, `DN_FORCE_GAME_MODE`,
 | `certs/server.crt` | gateway HTTPS | self-signed; clients trust `certs/ca.crt` |
 | `certs/firmament.crt` | Firmament :48843 | issuer spoofed as `Amazon RSA 2048 M01` to satisfy the client's CA pinning |
 
-## Current State (2026-08-02)
+## Current State
 
-Working end to end: registration and login, the hangar, the starter fleet with
-weapons/modules/officer slots, inventory, the market catalog, ship and captain
-customisation, career progression, matchmaking, battle-server spawning, and the
-travel handoff — the client now travels seconds after a match forms rather than
-waiting out a fixed delay, because the control plane reports when the engine is
-hosting.
-
-**The hard blocker is in-match.** A player reaches the battle server and stays a
-spectator, then gets disconnected about 15 seconds in. Two separate causes, both
-written up in `docs/battle-server-data-path.md`:
-
-1. The server-side loadout manager is empty and cannot be filled — it populates
-   from the local process's mmogbrain data, and a battle server makes zero
-   contact with mmogbrain even when handed the gateway/firmament addresses. Only
-   a game mode that supplies its own loadout (TM) can spawn a pawn, which is why
-   `DN_FORCE_GAME_MODE=TM` exists.
-2. The client uploads its tune data to the host over the OTS channel
-   (`UYLocalServerDataManager`) in fixed 900-row slices; one slice reassembles to
-   ~69.6 KB against UE4.13's hard 64 KB partial-bunch cap, so the host calls the
-   packet corrupt and drops the connection.
-
-The first thing worth fixing is why the client ignores our `YA_Tune` response —
-`YTuneManager::Set()` is never called, so today the server cannot influence the
-client's tune data at all. Four shapes/orderings have been ruled out against a
-live client; see the doc.
+The 2026-08-02 snapshot that stood here is long superseded: players spawn with
+their own fitted loadouts, matches run to the victory screen, and rewards, scores,
+contracts, statistics and the market all work live. `CLAUDE.md` ("Current state")
+has the list with what is verified and what is still a GUESS; `issues.md` has
+the open bugs. `docs/battle-server-data-path.md` still explains how a battle
+server gets its data, which is why the host mod exists.

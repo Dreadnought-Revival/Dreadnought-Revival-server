@@ -20,6 +20,18 @@ Two things still worth keeping from the old rule, as *guidance* rather than a ga
 
 A Go workspace (`go.work`, Go 1.24+ required) of independent modules under `github.com/Dreadnought-Revival/Dreadnought-Revival-server/<service>`.
 
+## Repositories
+
+Since 2026-11-05 the project lives under the [Dreadnought-Revival](https://github.com/Dreadnought-Revival) organisation:
+
+| Repository | Local checkout | Contents |
+| --- | --- | --- |
+| [Dreadnought-Revival-server](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server) | this one (branch `main`) | every service, `dn-dedicated`, `battle-server-mod/`, data, docs, skills |
+| [Dreadnought-Revival-Launcher](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher) | `../Dreadnought-Revival-Launcher` | the Windows launcher (was `dn-launcher/` here; history kept) |
+| [Dreadnought-Revival-Page](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Page) | — | the project website (in progress) |
+
+The old `darkace1998/Dreadnought-Revival-project` is archived; issue and PR numbers before the move refer to it. Module paths are `github.com/Dreadnought-Revival/Dreadnought-Revival-server/<service>`. The JWT issuer string `"Dreadnought-Revival-project"` (`auth-server/jwt`, `mmogbrain/protocol.GatewayJWTIssuer`) is a runtime value every token is checked against, not a link: leave it.
+
 ## Start here
 
 Five skills carry the parts of this project that are expensive to re-derive.
@@ -41,7 +53,7 @@ worked, and what was **retracted**, which is often the more useful half.
 
 Everything the server sends must be traceable to the client's own data tables (`data/`) or to the client binary. Invented-but-plausible values have repeatedly cost days here, because they look right and get built on. If a value cannot be determined, mark it `// GUESS:` with what evidence is missing. Debugging order: read the client's log → find the string in the binary → read the parser → only then hypothesize about the payload. Full working rules are in `CONTRIBUTING.md` — read it before touching anything protocol-related.
 
-## Current state (2026-09-25)
+## Current state (2026-09-25, list below updated 2026-11-05)
 
 Working end to end, verified against a live client: login, hangar, inventory and
 purchases, the tech tree (research then buy), fleet/loadout data, matchmaking,
@@ -74,29 +86,31 @@ mmogbrain -- never by patching the client:
   environment tag, and spares the Wine prefix's shared processes (killing them
   took down every other host in the prefix).
 
-Open (see `issues.md` and GitHub issues):
+Open on 2026-09-25, and what became of it (updated 2026-11-05; see `issues.md`;
+issue numbers are in the [old repository](https://github.com/darkace1998/Dreadnought-Revival-project/issues)):
 
-- **Scores are always 0** (#67): the PvP scoring table was mmogbrain data, not in
-  the paks. Kills/deaths/K-D are fine.
-- **Career goals** on the progression screen are placeholders (#68); only their
-  text format (`NSLOCTEXT`) is recovered. Tech-tree costs are guesses too (#66).
-- **Match rewards are placeholders**: since 2026-09-26 the mod reports each
-  player's result (kills/deaths/team/match result) to mmogbrain's loopback
-  `GET /battle/result`, which pays credits and XP (`DN_REWARD_*`, GUESS values)
-  and feeds the MatchesPlayed/MatchesWon/ShipsDestroyed career counters. Not yet
-  verified live; the real reward tables are #71.
-- **Daily contracts:** the catalogue is sent; the player's *assigned* contracts
-  come through a message not yet traced.
-- **Statistics screen** overflows the client's stack on open (cause unknown;
-  needs a Windows minidump). `YA_GetPlayerStatistics` always sends an empty list.
-- Intermittent "no selectable ships" after joining a host: the client never
-  sends its pick. Needs a client log from an affected join.
-- The client sends `YA_GameModeEvent` and `YA_LogSpecial`, which we do not answer.
+- **Scores always 0** (#67): FIXED 2026-09-28, verified live. The mod feeds
+  mmogbrain's `/battle/scoring` table through the client's own parser.
+- **Career goals** (#68): rebuilt 2026-10-09 from the original texts; the
+  goal pairing and targets are still GUESSES. Tech-tree costs too (#66).
+- **Match rewards**: paid from the mod's `/battle/result` report; the rewards
+  page was verified live 2026-11-03. The amounts are still GUESS values
+  (`DN_REWARD_*`); the real reward tables are #71.
+- **Daily contracts**: implemented 2026-10-09; claiming verified live 2026-11-03.
+- **Statistics screen** overflow: FIXED 2026-10-09 (the reply needs root pids
+  and one root stats entry per pid); filled with real counters since 2026-10-15.
+- **"No selectable ships"** after joining: players joined before the host's game
+  mode started; dn-dedicated now waits for it. Verified 2026-10-03: 13.6% -> ~2%.
+- **Market prices 0 on slow links**: the catalog is now gzipped the way the
+  client unpacks it (`Content-Type: application/gzip`), verified live 2026-11-05.
+- Still open: the client sends `YA_GameModeEvent` and `YA_LogSpecial`, which we
+  do not answer.
 
 ## Commands
 
 ```bash
 bash scripts/setup.sh                         # build all services into run/, plus certs + secrets on first run
+                                              # (+ run/dn-launcher.exe from ../Dreadnought-Revival-Launcher, or LAUNCHER_DIR)
 cd auth-server && go build -o ../run/auth-server .   # build a single service
 
 bash scripts/start-services.sh                # start the stack (logs in run/<service>.log)
@@ -200,12 +214,17 @@ Full detail and the debugging order are in the `dreadnought-mmog-responses` skil
 
 ## Commits
 
-Lowercase, scoped subjects: `techtree: ClassId must be an item id, not the EYShipClass ordinal`. For protocol changes the body must record the evidence (function, offset, client log before/after) and state plainly what was **not** verified against a running client.
+Lowercase, scoped subjects: `techtree: ClassId must be an item id, not the EYShipClass ordinal`. Push to `main` of the repository the change belongs to (server or launcher); a change spanning both is two commits, one per repository. For protocol changes the body must record the evidence (function, offset, client log before/after) and state plainly what was **not** verified against a running client.
 
 ## Reference docs
 
 - `CONTRIBUTING.md` — working rules, protocol invariants, debugging method (read first)
 - `AGENTS.md` — agent-oriented gotchas and current test status
+- `AGENT-CHAT.md` — the running log with the client-side project
+- `issues.md` — known bugs and blockers
+- `battle-server-mod/README.md` — the host mod: hooks, switches, build and deploy
+- `docs/battle-server-data-path.md` — how a battle server gets its data
+- `docs/web-services-endpoints.md` — the client's web-service endpoint table
 - `docs/client-data-reference.md` — extracted item/ship id maps and naming rules
 - `docs/client-data-validation.md` — audit of every id the server emits
 - README — setup, configuration variables, troubleshooting

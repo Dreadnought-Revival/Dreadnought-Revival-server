@@ -1,6 +1,6 @@
 # Copilot Instructions — Dreadnought Private Server
 
-A Go workspace of seven microservices that emulate the Greybox/Yager backend for the discontinued game Dreadnought (UE4, Steam App 835860), allowing unmodified clients to connect via a hosts-file redirect.
+A Go workspace of seven services, plus the `dn-dedicated` battle-server control plane, that emulate the Greybox/Yager backend for the discontinued game Dreadnought (UE4, Steam App 835860), so the unmodified client can play against it. The only thing a player installs is the launcher, which lives in its own repository ([Dreadnought-Revival-Launcher](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher)); this repository is [Dreadnought-Revival-server](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server). `CLAUDE.md` and `AGENTS.md` hold the full working rules.
 
 ## Build & Run
 
@@ -11,8 +11,9 @@ bash scripts/setup.sh
 # Build a single service
 cd auth-server && go build -o ../run/auth-server .
 
-# Run all tests (only mmogbrain currently has tests)
+# Run tests per module (never from the repo root)
 cd mmogbrain && go test ./...
+cd dn-dedicated && GOWORK=off go test ./...   # not in go.work
 
 # Run a single test
 cd mmogbrain && go test -run TestExtractMmogPlayerPIDFromLoginTicket ./...
@@ -22,7 +23,7 @@ curl http://127.0.0.1:8081/health   # auth-server
 curl http://127.0.0.1:8082/health   # legacy-api
 curl http://127.0.0.1:8083/health   # mmogbrain
 curl http://127.0.0.1:8084/health   # master-server
-curl http://127.0.0.1:8085/health   # game-manager
+curl http://127.0.0.1:8085/health   # control plane (dn-dedicated; game-manager with DN_CONTROL_PLANE=game-manager)
 ```
 
 ## Workspace Layout
@@ -34,10 +35,12 @@ auth-server/    :8081  Login, JWT issuance, bans (SQLite: auth.db)
 legacy-api/     :8082  Profiles, inventory, match history (SQLite: legacy.db)
 mmogbrain/      :8083  Matchmaking queue + Firmament TLS :48843 (SQLite: mmog.db)
 master-server/  :8084  Server registry + heartbeat (SQLite: master.db)
-game-manager/   :8085  Wine+DreadGame.exe spawner, port pool 7777–7877 (in-memory)
+dn-dedicated/   :8085  battle-server control plane (own module, not in go.work; GOWORK=off)
+game-manager/   :8085  older control plane, DN_CONTROL_PLANE=game-manager
 gateway/        :443   TLS termination + reverse proxy by Host header
 admin-cli/            CLI that calls service REST APIs via X-Admin-Key
-shared/               db, logging, middleware packages
+shared/               db, logging, middleware, dreadgameconfig packages
+battle-server-mod/    wer.dll for the headless battle-server host (never a player's client)
 ```
 
 ## Architecture: Request Flow
@@ -53,7 +56,7 @@ shared/               db, logging, middleware packages
   → UDP  → DreadGame.exe   :7777–7877   (UE4 direct game traffic)
 ```
 
-After a match is found, mmogbrain calls game-manager `POST /instances`, which spawns `wine DreadGame-Win64-Shipping.exe -dedicatedserver` and registers it with master-server.
+After a match is found, mmogbrain calls the control plane's `POST /instances` (dn-dedicated by default), which spawns the ordinary client exe headless under Wine (`"<map>?listen" -server -nullrhi -unattended`; there is no `-dedicatedserver` switch in the binary) and registers it with master-server.
 
 ## Key Conventions
 
@@ -105,7 +108,7 @@ mmogbrain is the most complex service. Beyond HTTP REST endpoints, it runs a **F
 - Binary encoding helpers: `appendMmogStringField`, `appendMmogInt32Field`, `appendMmogFieldNameAndType`, etc. — use these instead of raw byte manipulation
 - Player PIDs in the binary protocol are **UUID hex strings with hyphens stripped** (32 hex chars, not 36-char UUID format)
 - Race condition: Firmament auth success must be **delayed until MMOG `YA_PlayerGet` confirms player data is ready** — coordinated via `firmamentPendingAuth` and `mmogPlayerDataReady` maps with a 30-second timeout
-- `PLAYERS_PER_MATCH=2` for testing, `10` for production
+- `PLAYERS_PER_MATCH` defaults to `1` (every player gets a private match); set 2+ for PvP
 
 ## TLS Certificates
 

@@ -35,7 +35,7 @@ Operators running battle servers have one optional extra, `battle-server-mod/` �
         ├─ HTTPS :65443 ─► [mmogbrain]  Greybox web-services API (catalog, inventory, session)
         └─ TLS   :48843 ─► [mmogbrain]  firmament social/presence socket
 
-[mmogbrain matchmaker] ──match formed──► [game-manager :8085]
+[mmogbrain matchmaker] ──match formed──► [control plane :8085: dn-dedicated]
                                                │
                                                ▼
                                      wine + DreadGame-Win64-Shipping.exe
@@ -56,7 +56,8 @@ Two different things are called "gateway", which is worth knowing before reading
 | **legacy-api** | 8082 | Player profiles, inventory, match history |
 | **mmogbrain** | 8083, 48843, 65443 | The bulk of the backend: mmog binary protocol, catalog, fleets, tech tree, matchmaking |
 | **master-server** | 8084 | Server registry, heartbeat, server browser |
-| **game-manager** | 8085 | Spawns and monitors battle-server processes |
+| **dn-dedicated** | 8085 | The battle-server control plane: spawns, monitors and reaps one headless host per match, with per-instance readiness and logs in `run/battle-logs/` (separate module, not in `go.work`) |
+| **game-manager** | 8085 | The older control plane, still built; `DN_CONTROL_PLANE=game-manager` makes mmogbrain use it instead of dn-dedicated |
 | **DreadGame (Wine)** | 7777-7877/UDP | One battle server per active match |
 | **admin-cli** | — | Operator CLI (`servers`, `instances`, `stop-instance`, `ban`, `unban`, `queue`, `chat`, `players`, `grant`) |
 | **dn-launcher** | — | Windows launcher replacement (register / sign in / start the game), in its own repository: [Dreadnought-Revival-Launcher](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher) |
@@ -79,6 +80,8 @@ Go **1.24 or newer** is required — `go.work` declares 1.25 and the modules dec
 
 ```bash
 git clone https://github.com/Dreadnought-Revival/Dreadnought-Revival-server.git
+# optional: the launcher, beside it, so setup.sh also builds run/dn-launcher.exe
+git clone https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher.git
 cd Dreadnought-Revival-server
 
 bash scripts/setup.sh
@@ -88,7 +91,7 @@ bash scripts/setup.sh
 
 - checks the toolchain (and warns, without failing, if Wine is absent);
 - generates a self-signed CA and server certificate into `certs/` if none exists;
-- builds all seven services into `run/`, plus `run/dn-launcher.exe` (cross-compiled for Windows) when a checkout of [Dreadnought-Revival-Launcher](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher) sits beside this one (`../Dreadnought-Revival-Launcher`, or set `LAUNCHER_DIR`);
+- builds the seven workspace services and `dn-dedicated` into `run/`, plus `run/dn-launcher.exe` (cross-compiled for Windows) when a checkout of [Dreadnought-Revival-Launcher](https://github.com/Dreadnought-Revival/Dreadnought-Revival-Launcher) sits beside this one (`../Dreadnought-Revival-Launcher`, or set `LAUNCHER_DIR`);
 - writes `run/secrets.env` with a freshly generated `JWT_SECRET` and `ADMIN_KEY` (mode 600) if it does not exist;
 - verifies the extracted game data under `data/` is present.
 
@@ -302,33 +305,61 @@ Known gaps:
 
 ## Project layout
 
+The project is split over three repositories under
+[Dreadnought-Revival](https://github.com/Dreadnought-Revival):
+
+```
+Dreadnought-Revival-server/     this repository: everything that runs on the server
+Dreadnought-Revival-Launcher/   the Windows launcher, the only thing a player installs
+Dreadnought-Revival-Page/       the project website (in progress)
+```
+
+This repository:
+
 ```
 Dreadnought-Revival-server/
-├── auth-server/     Go + SQLite -- registration, login, JWT
-├── legacy-api/      Go + SQLite -- profiles, inventory, match history
-├── mmogbrain/       Go + SQLite -- mmog binary protocol, catalog, fleets, matchmaking
-├── master-server/   Go + SQLite -- server registry and browser
-├── game-manager/    Go         -- battle-server spawner and port pool
-├── gateway/         Go         -- TLS termination and reverse proxy
-├── admin-cli/       Go         -- operator CLI
-├── shared/          shared packages (db, logging, middleware, game data loader)
-├── data/            extracted game data: item tables, loadouts, assets (committed)
-├── certs/           CA + server certificate  (generated, gitignored)
-├── run/             binaries, databases, logs, secrets.env  (gitignored)
+├── auth-server/        Go + SQLite -- registration, login, JWT
+├── legacy-api/         Go + SQLite -- profiles, inventory, match history, launcher news tiles
+├── mmogbrain/          Go + SQLite -- mmog binary protocol, Firmament, market catalog,
+│                                      fleets, tech tree, matchmaking, admin dashboard
+├── master-server/      Go + SQLite -- server registry and browser
+├── gateway/            Go          -- TLS termination and reverse proxy (:80/:443)
+├── dn-dedicated/       Go          -- battle-server control plane on :8085 (own module,
+│                                      deliberately not in go.work: build with GOWORK=off)
+├── game-manager/       Go          -- the older control plane (DN_CONTROL_PLANE=game-manager)
+├── admin-cli/          Go          -- operator CLI
+├── shared/             Go          -- shared packages: db, logging, middleware,
+│                                      dreadgameconfig (the game data loader)
+├── battle-server-mod/  C++         -- wer.dll for the headless battle-server host only,
+│                                      never a player's client (see its README)
+├── data/               extracted game data: item tables, loadouts, market images (committed)
+├── tools/              bpdump (reads the client's cooked .uasset files), wer-proxy (WER diagnostics shim)
 ├── scripts/
 │   ├── setup.sh              build + certs + secrets, one shot
 │   ├── start-services.sh     start the stack
 │   ├── stop-services.sh      stop the stack
 │   ├── gen-certs.sh          CA + server certificate
 │   ├── secrets.env.example   annotated configuration template
-│   ├── hosts-redirect.sh     client hostname redirect (Linux)
-│   ├── hosts-redirect.ps1    client hostname redirect (Windows)
+│   ├── wine-client.sh        run the real game client against this stack under Wine
+│   ├── gen-*.py              regenerate tables in data/ from the game's own files
+│   ├── hosts-redirect.sh     client hostname redirect (Linux; older launchers)
+│   ├── hosts-redirect.ps1    client hostname redirect (Windows; older launchers)
 │   ├── backup.sh             database backup
 │   └── docker-compose.yml    container deployment (unmaintained; see below)
-└── docs/
-    ├── client-data-reference.md    extracted item/ship id maps and naming rules
-    ├── client-data-validation.md   audit of every id the server emits
-    └── reference/                  third-party reference material
+├── docs/
+│   ├── battle-server-data-path.md  how a battle server gets its data
+│   ├── client-data-reference.md    extracted item/ship id maps and naming rules
+│   ├── client-data-validation.md   audit of every id the server emits
+│   ├── web-services-endpoints.md   the client's web-service endpoints
+│   └── reference/                  third-party reference material
+├── .claude/skills/     agent skills: stack, mmog responses, RVA lookup, hooks, verify
+├── CLAUDE.md           working rules for AI agents (and humans)
+├── AGENTS.md           operational gotchas for agents
+├── CONTRIBUTING.md     working rules, protocol invariants, debugging method
+├── AGENT-CHAT.md       the running log with the client-side project
+├── issues.md           known bugs and blockers
+├── certs/              CA + server certificates  (generated, gitignored)
+└── run/                binaries, databases, logs, secrets.env  (gitignored)
 ```
 
 `scripts/docker-compose.yml` predates the current service topology and is not exercised by the maintainers; `scripts/start-services.sh` is the supported path.
@@ -408,7 +439,7 @@ openssl x509 -in certs/server.crt -noout -text | grep -A1 'Subject Alternative N
 
 Regenerate with `SERVER_IP=<ip>` if it does not.
 
-**Players queue but never get a match** — all six services must be running. The matchmaker POSTs to `game-manager`, and when nothing answers it rolls the queue back to `waiting` with no error shown to the player. Check `run/game-manager.log` and `run/mmogbrain.log`.
+**Players queue but never get a match** — all six services must be running. The matchmaker POSTs to the control plane on :8085 (`dn-dedicated`, or `game-manager` with `DN_CONTROL_PLANE=game-manager`), and when nothing answers it rolls the queue back to `waiting` with no error shown to the player. Check `run/game-manager.log` and `run/mmogbrain.log`.
 
 **A match forms but no battle server starts** — `GAME_BINARY` is unset or wrong, or Wine is missing. Wine must be 64-bit capable; Wine Staging is more reliable for UE4.
 
