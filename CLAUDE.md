@@ -116,6 +116,9 @@ numbers like #67 in older commits and docs are the [old repository's](https://gi
   abilities and fire, Havoc jets and wave modifiers, Ceres pods), and in
   mmogbrain Loadout B, the chat filter, direct messages, officer briefings, the
   tech-tree ship page and the captain slots.
+- **Escalation is off** since 2026-11-06 (operator): Proving Grounds is the
+  plain bootcamp again. The mode still exists; `DN_ESCALATION_QUEUE` (unset) puts
+  it back on a queue.
 - Open, besides the data issues above: leaderboard rules ([#4](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server/issues/4)), Ceres
   pickup values ([#5](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server/issues/5)), PvE seasons ([#6](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server/issues/6)), joining a running
   match ([#7](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server/issues/7)).

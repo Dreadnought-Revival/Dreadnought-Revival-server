@@ -1531,7 +1531,9 @@ once out of the fighter. Bots fly their usual ships.
 The host runs `?game=TDM` with `-GameMode=Escalation`; mmogbrain's
 `DN_ESCALATION_QUEUE` names the client queue whose matches run it (e.g. `BC`:
 the Proving Grounds button queues BC, not TM), on the TDM maps, so the clients
-and the scoring table see a TDM. Everything is the game's own machinery:
+and the scoring table see a TDM. It ran on Proving Grounds (`BC`) from 2026-11-04 to
+2026-11-06; since then no queue runs it (operator: Proving Grounds is the plain
+bootcamp again). Everything is the game's own machinery:
 
 - Fighters: `VH_LoadoutFilter_Jets_DA`, loaded with `StaticLoadObject`
   (`0xD78110`; TDM's game state has no fighter filter). Its loadouts are made per
