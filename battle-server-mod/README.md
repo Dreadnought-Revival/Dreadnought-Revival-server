@@ -1861,5 +1861,13 @@ data; where the game reads it is not traced) to the team size. Log lines:
 `bot list: extended for team size 40 -- T1 24 -> 40 ...`, `bot census: list T1
 .. T2 ..; alive T1 .. T2 ..; targets ...` (when the numbers change, at most
 every 30 s). Smoke-tested on a TDM host (entries 40/40, no crash); live from
-2026-11-07 15:34. UNTESTED in a played match: how many bots actually spawn,
-copies sharing spawn points, host load at 80 ships.
+2026-11-07 15:34.
+
+**Per fleet type (2026-11-07 16:1x).** In the first played match the list of
+40 a side came out at 13 a side, 13 bots each: before filling, the game keeps
+only the entries of the match's fleet type (`m_aiFleetType`, +0x20), and the
+Highlands TDM list has 8 entries per side and fleet type (Recruit, Veteran,
+Legendary -- the 8 bots a side of a normal match). The extension now grows
+each side's entries of each fleet type to the team size (smoke host, team size
+20: every group 8 -> 20, 48 -> 120 entries). UNTESTED in a played match: the
+bots alive after the fill, copies sharing spawn points, host load.

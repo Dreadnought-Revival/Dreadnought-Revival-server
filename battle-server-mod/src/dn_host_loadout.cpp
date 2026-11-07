@@ -5346,7 +5346,8 @@ static void BotCensusTick(uint8_t *gm) {
 // share their originals' spawn points.
 #define OFF_GM_NPC_MAX 0x974
 #define OFF_GM_MAX_SPAWNS_PER_CLASS 0x988 // m_maxSpawnsPerClassInATeam (SDK)
-#define NPC_LIST_LIMIT 256
+#define NPC_LIST_LIMIT 512
+#define NPC_FLEET_TYPES 8 // EYFleetType values seen as a byte; Recruit/Veteran/Legendary in use
 typedef void(__fastcall *tFMemFreeBots)(void *p);
 #define RVA_FMEMORY_FREE_BOTS 0xBFC9C0 // FMemory::Free, the same as RVA_FMEMORY_FREE
 static void ExtendBotList(uint8_t *gm, int size) {
@@ -5358,22 +5359,41 @@ static void ExtendBotList(uint8_t *gm, int size) {
   uint8_t *list = *(uint8_t **)(gm + OFF_GM_NPC_LIST);
   if (n <= 0 || n > NPC_LIST_LIMIT || !IsReadable(list, (size_t)n * NPC_ENTRY_SIZE))
     return;
-  int per[3] = {0, 0, 0};
+  // Grouped by side AND fleet type (m_aiFleetType +0x20): the game keeps
+  // only the entries of the match's fleet type before it fills (a 40-a-side
+  // list of mixed copies came out at 13 a side, 2026-11-07 16:09), so each
+  // fleet type of each side gets `size` entries. Highlands TDM: 24 a side.
+  int per[3][NPC_FLEET_TYPES] = {};
   for (int i = 0; i < n; ++i) {
-    int team = list[(size_t)i * NPC_ENTRY_SIZE + 8];
-    if (team == 1 || team == 2)
-      ++per[team];
+    uint8_t *e = list + (size_t)i * NPC_ENTRY_SIZE;
+    int team = e[8], fleet = e[0x20];
+    if ((team == 1 || team == 2) && fleet < NPC_FLEET_TYPES)
+      ++per[team][fleet];
   }
-  int add[3] = {0, per[1] > 0 && size > per[1] ? size - per[1] : 0, per[2] > 0 && size > per[2] ? size - per[2] : 0};
-  if (n + add[1] + add[2] > NPC_LIST_LIMIT) {
-    Logf("bot list: %d entries + %d + %d would pass %d; not extended", n, add[1], add[2], NPC_LIST_LIMIT);
+  int add[3][NPC_FLEET_TYPES] = {};
+  int extra = 0;
+  char groups[256];
+  int gl = 0;
+  groups[0] = 0;
+  for (int team = 1; team <= 2; ++team)
+    for (int f = 0; f < NPC_FLEET_TYPES; ++f) {
+      if (!per[team][f])
+        continue;
+      add[team][f] = size > per[team][f] ? size - per[team][f] : 0;
+      extra += add[team][f];
+      if (gl < (int)sizeof groups - 32)
+        gl += _snprintf_s(groups + gl, sizeof groups - gl, _TRUNCATE, " T%d/fleet %d: %d -> %d;", team, f, per[team][f],
+                          per[team][f] + add[team][f]);
+    }
+  if (!extra) {
+    Logf("bot list: every side and fleet type already has team size %d or more:%s", size, groups);
     return;
   }
-  if (!add[1] && !add[2]) {
-    Logf("bot list: T1 %d T2 %d entries already cover team size %d", per[1], per[2], size);
+  if (n + extra > NPC_LIST_LIMIT) {
+    Logf("bot list: %d entries + %d would pass %d; not extended:%s", n, extra, NPC_LIST_LIMIT, groups);
     return;
   }
-  int total = n + add[1] + add[2];
+  int total = n + extra;
   uint8_t *nb = (uint8_t *)((tFMemoryMalloc)(g_base + RVA_FMEMORY_MALLOC))((size_t)total * NPC_ENTRY_SIZE, 0);
   if (!nb) {
     Logf("bot list: allocation of %d entries failed; not extended", total);
@@ -5381,36 +5401,35 @@ static void ExtendBotList(uint8_t *gm, int size) {
   }
   memcpy(nb, list, (size_t)n * NPC_ENTRY_SIZE);
   int k = n;
-  for (int team = 1; team <= 2; ++team) {
-    for (int j = 0, need = add[team]; need > 0; j = (j + 1) % n) {
-      uint8_t *src = list + (size_t)j * NPC_ENTRY_SIZE;
-      if (src[8] != team)
-        continue;
-      uint8_t *dst = nb + (size_t)k * NPC_ENTRY_SIZE;
-      memcpy(dst, src, NPC_ENTRY_SIZE);
-      // m_npcSpawnIDs: its own buffer.
-      uint8_t *ids = *(uint8_t **)(src + 0x10);
-      int idn = *(int32_t *)(src + 0x18);
-      uint8_t *copy = nullptr;
-      if (ids && idn > 0 && idn < 1024 && IsReadable(ids, (size_t)idn * 8)) {
-        copy = (uint8_t *)((tFMemoryMalloc)(g_base + RVA_FMEMORY_MALLOC))((size_t)idn * 8, 0);
-        if (copy)
-          memcpy(copy, ids, (size_t)idn * 8);
+  for (int team = 1; team <= 2; ++team)
+    for (int f = 0; f < NPC_FLEET_TYPES; ++f)
+      for (int j = 0, need = add[team][f]; need > 0; j = (j + 1) % n) {
+        uint8_t *src = list + (size_t)j * NPC_ENTRY_SIZE;
+        if (src[8] != team || src[0x20] != f)
+          continue;
+        uint8_t *dst = nb + (size_t)k * NPC_ENTRY_SIZE;
+        memcpy(dst, src, NPC_ENTRY_SIZE);
+        // m_npcSpawnIDs: its own buffer.
+        uint8_t *ids = *(uint8_t **)(src + 0x10);
+        int idn = *(int32_t *)(src + 0x18);
+        uint8_t *copy = nullptr;
+        if (ids && idn > 0 && idn < 1024 && IsReadable(ids, (size_t)idn * 8)) {
+          copy = (uint8_t *)((tFMemoryMalloc)(g_base + RVA_FMEMORY_MALLOC))((size_t)idn * 8, 0);
+          if (copy)
+            memcpy(copy, ids, (size_t)idn * 8);
+        }
+        *(uint8_t **)(dst + 0x10) = copy;
+        *(int32_t *)(dst + 0x18) = copy ? idn : 0;
+        *(int32_t *)(dst + 0x1C) = copy ? idn : 0;
+        ++k;
+        --need;
       }
-      *(uint8_t **)(dst + 0x10) = copy;
-      *(int32_t *)(dst + 0x18) = copy ? idn : 0;
-      *(int32_t *)(dst + 0x1C) = copy ? idn : 0;
-      ++k;
-      --need;
-    }
-  }
   *(uint8_t **)(gm + OFF_GM_NPC_LIST) = nb;
   *(int32_t *)(gm + OFF_GM_NPC_COUNT) = total;
   *(int32_t *)(gm + OFF_GM_NPC_MAX) = total;
   ((tFMemFreeBots)(g_base + RVA_FMEMORY_FREE_BOTS))(list);
-  Logf("bot list: extended for team size %d -- T1 %d -> %d, T2 %d -> %d entries (copies of the map's own); "
-       "max spawns per class in a team %d",
-       size, per[1], per[1] + add[1], per[2], per[2] + add[2], *(int32_t *)(gm + OFF_GM_MAX_SPAWNS_PER_CLASS));
+  Logf("bot list: extended for team size %d, %d -> %d entries (copies of the map's own):%s max spawns per class in a team %d",
+       size, n, total, groups, *(int32_t *)(gm + OFF_GM_MAX_SPAWNS_PER_CLASS));
 }
 
 // Runs once a second on the game thread (HookGameModeTimer).
