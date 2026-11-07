@@ -68,6 +68,7 @@ func main() {
 		log.WithError(err).Fatal("open database")
 	}
 	setMmogPlayerStateDB(database)
+	loadMarketPricing()                                    // dashboard prices and sales (market_pricing.go)
 	if n := refundFreeCosmeticPurchases(database); n > 0 { // vanity_ownership.go
 		log.WithField("purchases", n).Info("cosmetics: refunded purchases of free cosmetics")
 	}

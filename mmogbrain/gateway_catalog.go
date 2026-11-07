@@ -1467,11 +1467,15 @@ func gatewayMarketPriceID(seed gatewayCatalogEntitySeed) string {
 // and tier, on a doubling-per-tier curve. They are deliberately confined to
 // this one function so a real table can replace it without touching anything
 // else.
+//
+// Each type and tier can be changed on the admin dashboard
+// (market_pricing.go, keys ship_t1..5 and module_t1..5).
 func gatewayMarketCreditPrice(itemType string, tier int32) int32 {
 	var base int32
+	key := "module_t"
 	switch itemType {
 	case "ship", "loadout":
-		base = 25000
+		base, key = 25000, "ship_t"
 	case "weapon", "ability", "module":
 		base = 5000
 	case "bundle", "currency":
@@ -1485,7 +1489,7 @@ func gatewayMarketCreditPrice(itemType string, tier int32) int32 {
 	if tier > 5 {
 		tier = 5
 	}
-	return base << uint(tier-1)
+	return marketPrice(key+strconv.Itoa(int(tier)), base<<uint(tier-1))
 }
 
 // gatewayMarketItemIsDevelopmentAsset reports whether a catalog id is one of the

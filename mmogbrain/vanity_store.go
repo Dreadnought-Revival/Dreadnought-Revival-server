@@ -73,10 +73,11 @@ func vanityOffer(itemID int32) (isVanity, sold bool, price int32) {
 	// (operator, 2026-09-28) -- except ship coatings, whose original price is
 	// documented: "350" GP per coating, for one manufacturer and class line
 	// (Steam forum, "Skin Coatings"). The rest have no surviving price.
+	// Both can be changed on the admin dashboard (market_pricing.go).
 	if v.Category() == 22 {
-		return true, true, coatingPrice
+		return true, true, marketPrice("coating", coatingPrice)
 	}
-	return true, true, vanityPrice
+	return true, true, marketPrice("vanity", vanityPrice)
 }
 
 // vanityCategoryName is the store section a cosmetic appears under -- the

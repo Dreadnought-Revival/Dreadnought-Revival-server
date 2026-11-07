@@ -103,6 +103,7 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     <button data-tab="moderation">Moderation</button>
     <button data-tab="fairplay">Fair play</button>
     <button data-tab="economy">Economy</button>
+    <button data-tab="market">Market</button>
     <button data-tab="modes">Game modes</button>
     <button data-tab="messages">Messages</button>
     <button data-tab="matches">Matches</button>
@@ -239,6 +240,30 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     </section>
     <section><h2>Sent lately</h2>
       <div class="table-wrap"><table><thead><tr><th>When (UTC)</th><th>What</th><th>Text</th><th class="num">Players</th><th>From</th></tr></thead><tbody id="msgRows"></tbody></table></div>
+    </section>
+  </div>
+
+  <div id="tab-market" class="hidden">
+    <div class="row"><span class="muted">The store and the purchase use the same price. Players see a change in the Market at their next login (the game loads the catalog then); anyone who buys before that pays the new price.</span></div>
+    <section style="margin-top:0"><h2>Prices</h2>
+      <div class="table-wrap"><table><thead><tr><th>Item</th><th>Currency</th><th class="num">Default</th><th>Price</th><th></th></tr></thead><tbody id="mkPrices"></tbody></table></div>
+      <div class="row" style="margin-top:8px"><button class="btn" id="mkSave">Save changed prices</button><span class="muted">Single ships keep this curve until #15 adds per-ship prices.</span></div>
+      <p id="mkMsg"></p>
+    </section>
+    <section><h2>Sales</h2>
+      <div class="row"><span class="muted">Sales lower cosmetic prices; the game shows them in the ship customizer and on the captain screen. Hero ships and bundles cannot be put on sale yet.</span></div>
+      <div class="table-wrap"><table><thead><tr><th>Sale</th><th class="num">Off</th><th>Covers</th><th>Start (UTC)</th><th>End (UTC)</th><th>State</th><th></th></tr></thead><tbody id="mkSales"></tbody></table></div>
+    </section>
+    <section class="manage"><h2>New sale</h2>
+      <div class="fields">
+        <label>Name<input id="slName" type="text" maxlength="60" placeholder="e.g. Winter Sale"></label>
+        <label>Discount (%)<input id="slPercent" type="number" min="1" max="90" step="1" value="25"></label>
+        <label>Covers<select id="slScope"></select></label>
+        <label>Start (your time; empty = now)<input id="slStart" type="datetime-local"></label>
+        <label>End (your time)<input id="slEnd" type="datetime-local"></label>
+      </div>
+      <div class="row"><button class="btn" id="slCreate">Create sale</button></div>
+      <p id="slMsg"></p>
     </section>
   </div>
 
@@ -911,6 +936,61 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     msgPost('/messages/motd', { text: '' }, 'motdMsg', () => 'Turned off.').then((ok) => { if (ok) $('motdText').value = ''; });
   };
 
+  // --- market -------------------------------------------------------------
+  let mkData = null;
+  const SALE_STATES = { running: 'good', upcoming: 'warn', ended: '' };
+  function renderMarket(d) {
+    mkData = d;
+    let group = '';
+    const rows = [];
+    d.prices.forEach((p) => {
+      if (p.group !== group) { group = p.group; rows.push(el('tr', {}, el('td', { colspan: 5, class: 'muted' }, el('b', {}, group)))); }
+      const input = el('input', { type: 'number', min: '1', max: String(d.max_price), step: '1', value: String(p.value), 'data-key': p.key, style: 'width:130px' });
+      rows.push(el('tr', {}, el('td', {}, p.label), el('td', {}, p.currency), el('td', { class: 'num' }, fmt(p.default)), el('td', {}, input),
+        el('td', {}, p.overridden ? el('a', { class: 'link', onclick: () => mkSetPrices({ [p.key]: null }, `${p.label}: back to ${fmt(p.default)}.`) }, 'use default') : el('span', { class: 'muted' }, 'default'))));
+    });
+    fill('mkPrices', rows, 'No prices.', 5);
+    fill('mkSales', d.sales.map((x) => el('tr', {}, el('td', {}, x.name + (x.built_in ? ' (built in)' : '')), el('td', { class: 'num' }, x.percent + ' %'),
+      el('td', {}, `${x.scope_label} (${fmt(x.items)})`), el('td', {}, x.start.replace('T', ' ').replace('Z', '')), el('td', {}, x.end.replace('T', ' ').replace('Z', '')),
+      el('td', {}, el('span', { class: 'chip ' + SALE_STATES[x.state] }, x.state)),
+      el('td', {}, x.state === 'ended' ? '' : el('button', { class: 'btn', onclick: () => mkEndSale(x) }, 'End now')))), 'No sales.', 7);
+    const sel = $('slScope');
+    if (!sel.options.length) d.scopes.forEach((sc) => sel.append(el('option', { value: sc.scope }, `${sc.label} (${fmt(sc.items)} items)`)));
+  }
+  async function loadMarket() { renderMarket(await api('/market')); }
+  async function mkSetPrices(body, ok) {
+    try { renderMarket(await postJSON('/market/prices', body)); $('mkMsg').className = 'ok'; $('mkMsg').textContent = ok; }
+    catch (e) { if (e.message !== 'forbidden') { $('mkMsg').className = 'err'; $('mkMsg').textContent = String(e.message || e); } }
+  }
+  $('mkSave').onclick = () => {
+    if (!mkData) return;
+    const body = {}; const what = [];
+    document.querySelectorAll('#mkPrices input[data-key]').forEach((inp) => {
+      const p = mkData.prices.find((x) => x.key === inp.dataset.key);
+      const v = Math.trunc(Number(inp.value));
+      if (p && inp.value.trim() !== '' && v !== p.value) { body[p.key] = v; what.push(`${p.label}: ${fmt(p.value)} -> ${fmt(v)} ${p.currency}`); }
+    });
+    if (!what.length) { $('mkMsg').className = 'muted'; $('mkMsg').textContent = 'Nothing changed.'; return; }
+    if (!confirm('Change these prices?\n\n' + what.join('\n'))) return;
+    mkSetPrices(body, 'Prices saved.');
+  };
+  async function mkEndSale(x) {
+    if (!confirm(`End "${x.name}" now? Prices go back to normal at each player's next login.`)) return;
+    try { renderMarket(await postJSON(`/market/sales/${encodeURIComponent(x.id)}/end`, {})); }
+    catch (e) { if (e.message !== 'forbidden') alert(e.message); }
+  }
+  $('slCreate').onclick = async () => {
+    const msg = $('slMsg');
+    const end = $('slEnd').value; const start = $('slStart').value;
+    if (!end) { msg.className = 'err'; msg.textContent = 'Pick the end.'; return; }
+    const body = { name: $('slName').value.trim(), percent: Math.trunc(Number($('slPercent').value)), scope: $('slScope').value,
+      start: start ? new Date(start).toISOString() : '', end: new Date(end).toISOString() };
+    const sel = $('slScope');
+    if (!confirm(`Create "${body.name}": ${body.percent} % off ${sel.options[sel.selectedIndex].text}, until ${end}?`)) return;
+    try { renderMarket(await postJSON('/market/sales', body)); msg.className = 'ok'; msg.textContent = 'Sale created. Players see it at their next login.'; $('slName').value = ''; }
+    catch (e) { if (e.message !== 'forbidden') { msg.className = 'err'; msg.textContent = String(e.message || e); } }
+  };
+
   // --- economy ------------------------------------------------------------
   let economyShown = false;
   function renderEconomy(d) {
@@ -986,7 +1066,7 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
   }
 
   const loaders = {
-    overview: loadOverview, metrics: loadMetrics, moderation: loadModeration, fairplay: loadFairPlay, economy: loadEconomy, modes: loadModes, messages: loadMessages, instances: loadInstances, players: () => Promise.all([loadOnline(), loadPlayers()]),
+    overview: loadOverview, metrics: loadMetrics, moderation: loadModeration, fairplay: loadFairPlay, economy: loadEconomy, market: loadMarket, modes: loadModes, messages: loadMessages, instances: loadInstances, players: () => Promise.all([loadOnline(), loadPlayers()]),
     matches: loadMatches, reports: loadReports, telemetry: loadTelemetry, logs: loadLog,
   };
   async function refresh() {

@@ -514,6 +514,23 @@ var migrations = []string{
 	// When an admin last renamed the player (player_rename.go, Unix s): a
 	// launcher token issued before it carries the old name.
 	`ALTER TABLE player_state ADD COLUMN name_changed_at INTEGER NOT NULL DEFAULT 0`,
+	// Market prices and sales set on the admin dashboard (market_pricing.go):
+	// an override per price key (the code's value is the default), and sales
+	// (times in Unix s) on top of the campaigns in market_campaigns.go.
+	`CREATE TABLE IF NOT EXISTS market_price_overrides (
+		key        TEXT PRIMARY KEY,
+		amount     INTEGER NOT NULL,
+		updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE TABLE IF NOT EXISTS market_sales (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		name       TEXT NOT NULL,
+		percent    INTEGER NOT NULL,
+		scope      TEXT NOT NULL,
+		start_at   INTEGER NOT NULL,
+		end_at     INTEGER NOT NULL,
+		created_at TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
 }
 
 func Open(path string) (*sql.DB, error) {

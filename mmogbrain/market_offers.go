@@ -50,13 +50,14 @@ func promotionFlagSetNames(flags int) []any {
 // ~4,200 GP at the GP-pack rates (500 GP $6.99 ... 14,000 GP $133.49); T2/T3
 // scale down from that.
 func heroPriceGP(tier int32) int32 {
+	// The admin dashboard can change each (market_pricing.go).
 	switch {
 	case tier <= 2:
-		return 1500
+		return marketPrice("hero_t12", 1500)
 	case tier == 3:
-		return 2500
+		return marketPrice("hero_t3", 2500)
 	default:
-		return 3500
+		return marketPrice("hero_t45", 3500)
 	}
 }
 
@@ -212,7 +213,9 @@ var marketBundles = []marketBundle{
 
 // priceGP is the bundle's GP price. GUESS: the original euro price at 100 GP
 // per euro, the rate of the larger GP packs (14,000 GP for $133.49).
-func (b marketBundle) priceGP() int32 { return int32(b.priceEUR*100 + 0.5) }
+func (b marketBundle) priceGP() int32 {
+	return marketPrice("bundle_"+strconv.Itoa(int(b.id)), int32(b.priceEUR*100+0.5)) // dashboard override (market_pricing.go)
+}
 
 // contents resolves a bundle's heroes and cosmetics to item ids.
 func (b marketBundle) contents() (heroes, vanity []int32) {

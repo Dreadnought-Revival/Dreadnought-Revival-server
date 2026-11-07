@@ -113,7 +113,7 @@ func campaignForItem(itemID int32, now time.Time) (marketCampaign, bool) {
 	if _, ok := dreadconfig.VanityItemByID(itemID); !ok && isShipVanityItemID(itemID) {
 		itemID = sharedGearID(itemID)
 	}
-	for _, c := range marketCampaigns {
+	for _, c := range allMarketCampaigns() { // with the dashboard's sales (market_pricing.go)
 		if c.active(now) && c.item(itemID) {
 			return c, true
 		}
