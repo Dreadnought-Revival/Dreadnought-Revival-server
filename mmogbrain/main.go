@@ -69,6 +69,7 @@ func main() {
 	}
 	setMmogPlayerStateDB(database)
 	loadMarketPricing()                                    // dashboard prices and sales (market_pricing.go)
+	loadTechTreeCosts()                                    // dashboard tech tree costs (techtree_costs.go)
 	if n := refundFreeCosmeticPurchases(database); n > 0 { // vanity_ownership.go
 		log.WithField("purchases", n).Info("cosmetics: refunded purchases of free cosmetics")
 	}

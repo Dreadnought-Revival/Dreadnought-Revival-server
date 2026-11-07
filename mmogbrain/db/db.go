@@ -531,6 +531,18 @@ var migrations = []string{
 		end_at     INTEGER NOT NULL,
 		created_at TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
+	// Tech tree costs per node set on the admin dashboard (techtree_costs.go):
+	// field "xp" (research) or "price" (credits; GP for a hero), amount NULL
+	// = keep the code's value and only record its status and source.
+	`CREATE TABLE IF NOT EXISTS techtree_cost_overrides (
+		item_id    INTEGER NOT NULL,
+		field      TEXT NOT NULL,
+		amount     INTEGER,
+		status     TEXT NOT NULL DEFAULT 'guess',
+		source     TEXT NOT NULL DEFAULT '',
+		updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (item_id, field)
+	)`,
 }
 
 func Open(path string) (*sql.DB, error) {

@@ -673,7 +673,7 @@ func gatewayItemCatalogSeeds(playerID string) []gatewayCatalogEntitySeed {
 			entityType:      "item",
 			itemType:        meta.itemType,
 			priceCurrencyID: "CR",
-			priceAmount:     gatewayMarketCreditPrice(meta.itemType, gatewayMarketItemTier(itemID)),
+			priceAmount:     techTreePriceOr(itemID, gatewayMarketCreditPrice(meta.itemType, gatewayMarketItemTier(itemID))),
 			quantity:        1,
 			hidden:          gatewayMarketItemIsDevelopmentAsset(meta.displayName),
 		}
@@ -846,7 +846,7 @@ func researchedItemOfferSeeds(playerID string, owned map[int32]struct{}) []gatew
 			entityType:      "item",
 			itemType:        itemType,
 			priceCurrencyID: "CR",
-			priceAmount:     gatewayMarketCreditPrice(itemType, row.Tier),
+			priceAmount:     techTreePriceOr(id, gatewayMarketCreditPrice(itemType, row.Tier)),
 			quantity:        1,
 			hidden:          true,
 		}

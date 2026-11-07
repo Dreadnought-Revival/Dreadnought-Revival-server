@@ -98,7 +98,7 @@ func heroCatalogSeeds(playerID string) []gatewayCatalogEntitySeed {
 			manufacturer:    h.manufacturer,
 			loadoutID:       h.loadoutID,
 			priceCurrencyID: vanityCurrency,
-			priceAmount:     heroPriceGP(h.tier),
+			priceAmount:     techTreePriceOr(h.loadoutID, heroPriceGP(h.tier)), // per-ship price (techtree_costs.go)
 			quantity:        1,
 			owned:           owned[h.loadoutID],
 			heroShip:        true,

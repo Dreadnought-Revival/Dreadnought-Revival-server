@@ -65,6 +65,7 @@ pre.log { margin: 0; padding: 10px 12px; font: 12px/1.4 var(--mono); white-space
 .manage .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin: 12px 0; }
 .manage label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
 .manage input, .manage select { width: 100%; }
+.manage input[type=checkbox] { width: auto; }
 .ok { color: var(--good); }
 td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
 .charts { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
@@ -104,6 +105,7 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     <button data-tab="fairplay">Fair play</button>
     <button data-tab="economy">Economy</button>
     <button data-tab="market">Market</button>
+    <button data-tab="techtree">Tech tree</button>
     <button data-tab="modes">Game modes</button>
     <button data-tab="messages">Messages</button>
     <button data-tab="matches">Matches</button>
@@ -265,6 +267,18 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
       <div class="row"><button class="btn" id="slCreate">Create sale</button></div>
       <p id="slMsg"></p>
     </section>
+  </div>
+
+  <div id="tab-techtree" class="hidden">
+    <div class="row"><span class="muted">Research (XP) and purchase costs per ship, node by node. Each value records where it comes from: GUESS (the code's placeholder), Sourced (with the source), or Accepted (a deliberate design choice). Empty = the code's value. Players see changes at their next login; XP and credits already spent are not changed.</span></div>
+    <div class="row"><span class="chip" id="ttProgress"></span>
+      <select id="ttShip" style="min-width:280px"></select>
+      <button class="btn" id="ttExport">Export</button>
+      <label class="btn" style="display:inline-block">Import<input id="ttImport" type="file" accept=".json,application/json" class="hidden"></label>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>Node</th><th>Research XP</th><th>Purchase price</th><th>Warnings</th></tr></thead><tbody id="ttNodes"></tbody></table></div>
+    <div class="row" style="margin-top:8px"><button class="btn" id="ttSave">Save changes</button><span class="muted" id="ttShipProgress"></span></div>
+    <p id="ttMsg"></p>
   </div>
 
   <div id="tab-instances" class="hidden">
@@ -991,6 +1005,82 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     catch (e) { if (e.message !== 'forbidden') { msg.className = 'err'; msg.textContent = String(e.message || e); } }
   };
 
+  // --- tech tree ----------------------------------------------------------
+  let ttStatuses = {}; let ttPage = null;
+  const pct = (a, b) => (b ? Math.round((100 * a) / b) : 0) + ' %';
+  async function loadTechTree() {
+    const d = await api('/techtree/ships');
+    ttStatuses = d.statuses;
+    $('ttProgress').textContent = `${fmt(d.done)} of ${fmt(d.total)} values sourced or accepted (${pct(d.done, d.total)})`;
+    const sel = $('ttShip'); const keep = sel.value;
+    sel.replaceChildren();
+    const groups = {};
+    d.ships.forEach((x) => {
+      const g = groups[x.line] || (groups[x.line] = el('optgroup', { label: x.line }));
+      g.append(el('option', { value: String(x.id) }, `${x.name} (T${x.tier}${x.hero ? ', hero' : ''}) — ${x.done}/${x.total}${x.warnings ? ' · ' + x.warnings + ' warning' + (x.warnings > 1 ? 's' : '') : ''}`));
+    });
+    Object.keys(groups).sort().forEach((k) => sel.append(groups[k]));
+    if (keep) sel.value = keep;
+    await loadTechTreeShip();
+  }
+  function ttCell(n, field) {
+    const v = n[field]; if (!v) return el('td', { class: 'muted' }, '—');
+    const amount = el('input', { type: 'number', min: '0', step: '1', placeholder: fmt(v.default), value: v.overridden ? String(v.value) : '', 'data-item': String(n.item_id), 'data-field': field, 'data-role': 'amount', style: 'width:110px' });
+    const status = el('select', { 'data-item': String(n.item_id), 'data-field': field, 'data-role': 'status' });
+    Object.entries(ttStatuses).forEach(([k, label]) => status.append(el('option', { value: k }, label)));
+    status.value = v.status;
+    const source = el('input', { type: 'text', maxlength: '500', placeholder: 'source', value: v.source, 'data-item': String(n.item_id), 'data-field': field, 'data-role': 'source', style: 'width:180px' });
+    return el('td', {}, el('div', { class: 'row', style: 'margin:0;flex-wrap:nowrap' }, amount, el('span', { class: 'muted' }, v.currency)),
+      el('div', { class: 'row', style: 'margin:4px 0 0' }, status, source), el('div', { class: 'results' }, `default ${fmt(v.default)}`));
+  }
+  async function loadTechTreeShip() {
+    const id = $('ttShip').value; if (!id) return;
+    const d = await api('/techtree/ships/' + id);
+    ttPage = d;
+    $('ttShipProgress').textContent = `${d.ship.name}: ${d.done} of ${d.total} values sourced or accepted (${pct(d.done, d.total)}).`;
+    const KIND = { hull: 'hull', hero: 'hero ship', module: 'module', briefing: 'officer briefing (same on every ship)' };
+    fill('ttNodes', d.nodes.map((n) => el('tr', {}, el('td', {}, el('div', {}, n.name), el('div', { class: 'results' }, `${KIND[n.kind] || n.kind} · T${n.tier} · ${n.item_id}`)),
+      ttCell(n, 'xp'), ttCell(n, 'price'),
+      el('td', { class: 'results' }, ...n.warnings.map((w) => el('div', { class: 'err' }, w))))), 'No nodes.', 4);
+  }
+  $('ttShip').onchange = () => { $('ttMsg').textContent = ''; loadTechTreeShip(); };
+  $('ttSave').onclick = async () => {
+    if (!ttPage) return;
+    const values = []; const what = [];
+    for (const n of ttPage.nodes) for (const field of ['xp', 'price']) {
+      const v = n[field]; if (!v) continue;
+      const q = (role) => document.querySelector(`#ttNodes [data-item="${n.item_id}"][data-field="${field}"][data-role="${role}"]`);
+      const raw = q('amount').value.trim(); const amount = raw === '' ? null : Math.trunc(Number(raw));
+      const status = q('status').value; const source = q('source').value.trim();
+      const was = v.overridden ? v.value : null;
+      if (amount === was && status === v.status && source === v.source) continue;
+      values.push({ item_id: n.item_id, field, amount, status, source });
+      what.push(`${n.name} ${field === 'xp' ? 'XP' : 'price'}: ${was === null ? 'default' : fmt(was)} -> ${amount === null ? 'default' : fmt(amount)} (${ttStatuses[status]})`);
+    }
+    const msg = $('ttMsg');
+    if (!values.length) { msg.className = 'muted'; msg.textContent = 'Nothing changed.'; return; }
+    if (!confirm('Save?\n\n' + what.slice(0, 25).join('\n') + (what.length > 25 ? `\n… and ${what.length - 25} more` : ''))) return;
+    try { await postJSON('/techtree/values', { values }); msg.className = 'ok'; msg.textContent = `Saved ${values.length} value${values.length > 1 ? 's' : ''}.`; loadTechTree(); }
+    catch (e) { if (e.message !== 'forbidden') { msg.className = 'err'; msg.textContent = String(e.message || e); } }
+  };
+  $('ttExport').onclick = async () => {
+    try {
+      const d = await api('/techtree/export');
+      const url = URL.createObjectURL(new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' }));
+      const a = el('a', { href: url, download: 'techtree-costs.json' }); document.body.append(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    } catch (e) { if (e.message !== 'forbidden') alert(e.message); }
+  };
+  $('ttImport').onchange = async (ev) => {
+    const f = ev.target.files[0]; ev.target.value = ''; if (!f) return;
+    const msg = $('ttMsg');
+    try {
+      const d = JSON.parse(await f.text());
+      if (!Array.isArray(d.values) || !d.values.length) throw new Error('the file has no "values"');
+      if (!confirm(`Import ${d.values.length} values from ${f.name}? Values not in the file stay as they are.`)) return;
+      await postJSON('/techtree/import', { values: d.values }); msg.className = 'ok'; msg.textContent = `Imported ${d.values.length} values.`; loadTechTree();
+    } catch (e) { if (e.message !== 'forbidden') { msg.className = 'err'; msg.textContent = 'Import failed: ' + String(e.message || e); } }
+  };
+
   // --- economy ------------------------------------------------------------
   let economyShown = false;
   function renderEconomy(d) {
@@ -1066,7 +1156,7 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
   }
 
   const loaders = {
-    overview: loadOverview, metrics: loadMetrics, moderation: loadModeration, fairplay: loadFairPlay, economy: loadEconomy, market: loadMarket, modes: loadModes, messages: loadMessages, instances: loadInstances, players: () => Promise.all([loadOnline(), loadPlayers()]),
+    overview: loadOverview, metrics: loadMetrics, moderation: loadModeration, fairplay: loadFairPlay, economy: loadEconomy, market: loadMarket, techtree: loadTechTree, modes: loadModes, messages: loadMessages, instances: loadInstances, players: () => Promise.all([loadOnline(), loadPlayers()]),
     matches: loadMatches, reports: loadReports, telemetry: loadTelemetry, logs: loadLog,
   };
   async function refresh() {

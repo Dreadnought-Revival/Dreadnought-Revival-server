@@ -2484,6 +2484,7 @@ type techTreeItem struct {
 	tier         int32
 	position     int32
 	xpCost       int32
+	xpDefault    int32 // xpCost before the dashboard's override (techtree_costs.go)
 	prereq       []int32
 	// techItemsRequired is NumTechTreeItemsRequired: how many of the PARENT
 	// ship's modules (the items keyed to this node's ClassId) the player must
@@ -3260,6 +3261,7 @@ func techTreeBaseItemsWith(noModules bool) []techTreeItem {
 	if !noModules {
 		items = append(items, techTreeFittedAnchorItems(items)...)
 	}
+	applyTechTreeXPOverrides(items) // admin dashboard (techtree_costs.go)
 	return items
 }
 
@@ -6407,6 +6409,17 @@ func purchasePriceForItemChecked(itemID int32) (price int32, derived bool) {
 		}
 		return p, true
 	}
+	// A tech tree node's price set on the admin dashboard (techtree_costs.go),
+	// the same one its catalog entry shows.
+	if c, ok := techTreeCostFor(itemID, "price"); ok && c.amount != nil {
+		return *c.amount, true
+	}
+	return purchasePriceDerived(itemID)
+}
+
+// purchasePriceDerived is an item's price from the code alone (no dashboard
+// per-item override).
+func purchasePriceDerived(itemID int32) (price int32, derived bool) {
 	// A per-ship weapon/module id is offered by perShipResearchOfferSeeds at
 	// the tier of its research row; charge exactly what that offer shows.
 	if row, ok := perShipResearchRow(itemID); ok {
