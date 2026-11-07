@@ -26,20 +26,19 @@ func sortedMapKeys[K cmp.Ordered, V any](m map[K]V) []K {
 }
 
 var (
-	tuneJSONOnce      sync.Once
-	weaponsTuneJSON    string
-	projectilesTuneJSON string
-	abilitiesTuneJSON  string
-	officersTuneJSON   string
-	featsTuneJSON      string
-	gameModifiersTuneJSON string
-	killScoringTuneJSON string
-	waveScoringTuneJSON string
-	defendScoringTuneJSON string
+	tuneJSONOnce                   sync.Once
+	weaponsTuneJSON                string
+	projectilesTuneJSON            string
+	abilitiesTuneJSON              string
+	officersTuneJSON               string
+	featsTuneJSON                  string
+	gameModifiersTuneJSON          string
+	killScoringTuneJSON            string
+	waveScoringTuneJSON            string
+	defendScoringTuneJSON          string
 	remainingPlayerScoringTuneJSON string
-	medalScoringTuneJSON string
+	medalScoringTuneJSON           string
 )
-
 
 // otsTableRowsJSON echoes a cooked OTS data table back to the client verbatim:
 // every row, every field, under the row's OWN name.
@@ -80,7 +79,11 @@ func otsTableRowsJSON(fileName string) string {
 		for field, value := range table.Rows[name] {
 			row[field] = value
 		}
-		row["RowName"] = name
+		// "Name" is the key the client indexes rows by: its tune rebuild
+		// (0x3D2130) reads each row's "Name" into the lookup maps that
+		// LoadWeaponRow and the projectile/officer lookups search (verified in
+		// the exe 2026-11-07). "RowName" matched nothing.
+		row["Name"] = name
 		rows = append(rows, row)
 	}
 	out, err := json.Marshal(rows)
@@ -163,24 +166,13 @@ func MedalScoringTuneJSON() string {
 	return medalScoringTuneJSON
 }
 
-
+// buildProjectilesTuneJSON echoes the client's own projectile table
+// (/Game/Generic/DataTables/Projectiles/DN_Projectile_OTS_DT, the asset its
+// backup load reads). It used to send each row's name and nothing else,
+// which is "SpawnProjectile(): Trying to spawn a projectile without OTS
+// data!" on every shot once a reply was accepted (2026-09-24).
 func buildProjectilesTuneJSON() string {
-	projectiles := AllProjectiles()
-	if len(projectiles) == 0 {
-		return `[]`
-	}
-	rows := make([]map[string]any, 0, len(projectiles))
-	for _, rowName := range sortedMapKeys(projectiles) {
-		row := map[string]any{
-			"RowName": rowName,
-		}
-		rows = append(rows, row)
-	}
-	data, err := json.Marshal(rows)
-	if err != nil {
-		return `[]`
-	}
-	return string(data)
+	return otsTableRowsJSON("Projectiles/DN_Projectile_OTS_DT.json")
 }
 
 func buildAbilitiesTuneJSON() string {
@@ -192,10 +184,10 @@ func buildAbilitiesTuneJSON() string {
 	for _, id := range sortedMapKeys(abilities) {
 		a := abilities[id]
 		row := map[string]any{
-			"RowName":      id,
+			"Name":          id,
 			"m_abilityName": a.AbilityName,
-			"m_coolDown":   a.CoolDown,
-			"m_activeTime": a.ActiveTime,
+			"m_coolDown":    a.CoolDown,
+			"m_activeTime":  a.ActiveTime,
 		}
 		rows = append(rows, row)
 	}
@@ -206,7 +198,6 @@ func buildAbilitiesTuneJSON() string {
 	return string(data)
 }
 
-
 func buildFeatsTuneJSON() string {
 	feats := AllShipFeats()
 	if len(feats) == 0 {
@@ -216,7 +207,7 @@ func buildFeatsTuneJSON() string {
 	for _, name := range sortedMapKeys(feats) {
 		f := feats[name]
 		row := map[string]any{
-			"RowName":    name,
+			"Name":       name,
 			"m_enabling": f.Enabling,
 			"m_triggers": f.Triggers,
 			"m_effects":  f.Effects,
@@ -238,7 +229,7 @@ func buildGameModifiersTuneJSON() string {
 	rows := make([]map[string]any, 0, len(modifiers))
 	for i, m := range modifiers {
 		row := map[string]any{
-			"RowName":        fmt.Sprintf("GameModifier_%d", i),
+			"Name":           fmt.Sprintf("GameModifier_%d", i),
 			"m_gameModeName": m.GameModeName,
 			"m_excludes":     m.Excludes,
 			"m_feats":        m.Feats,

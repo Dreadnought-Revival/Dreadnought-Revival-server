@@ -28,6 +28,7 @@ func registerAdminPlayerManagement(api *mux.Router) {
 	api.HandleFunc("/players/{pid}/ships", adminAPIPlayerGrantShip).Methods(http.MethodPost)
 	api.HandleFunc("/players/{pid}/contracts/reset", adminAPIPlayerResetContracts).Methods(http.MethodPost)
 	api.HandleFunc("/players/{pid}/rename", adminAPIPlayerRename).Methods(http.MethodPost)
+	registerAdminTuneTest(api)
 }
 
 type adminContract struct {
@@ -101,6 +102,7 @@ func adminAPIPlayerDetail(w http.ResponseWriter, r *http.Request) {
 		Created string `json:"created"`
 		// Banned: banned_at / ban_reason from admin_bans (admin_moderation.go).
 		Banned    bool            `json:"banned"`
+		TuneTest  string          `json:"tune_test"` // tune_reply.go: "", check or apply
 		BanReason string          `json:"ban_reason,omitempty"`
 		BannedAt  string          `json:"banned_at,omitempty"`
 		Matches   int             `json:"matches"`
@@ -113,6 +115,7 @@ func adminAPIPlayerDetail(w http.ResponseWriter, r *http.Request) {
 		Heroes    []adminShip     `json:"heroes"`
 	}
 	out.PID = pid
+	out.TuneTest = tuneTestMode(pid)
 	if err := database.QueryRow(`SELECT COALESCE(display_name,''), current_rank, soft_currency, premium_currency, free_xp, created_at
 		FROM player_state WHERE user_id=?`, pid).Scan(&out.Name, &out.Rank, &out.Credits, &out.Premium, &out.FreeXP, &out.Created); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

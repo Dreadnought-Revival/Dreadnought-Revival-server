@@ -2479,10 +2479,9 @@ func TestTunePayloadUsesClientParserShape(t *testing.T) {
 		"HavocTune",
 		"GameModifiersTune",
 	} {
-		sectionJSON := protocol.ExtractStringField(returning, section)
-		if sectionJSON == "" {
-			t.Fatalf("YA_Tune %s missing or empty", section)
-		}
+		// An ARRAY of row objects since 2026-11-07 (tune_reply.go): the
+		// client's rebuild walks the table's children; a JSON string had none.
+		extractNamedMmogArray(t, returning, section)
 	}
 
 	result := extractNamedMmogObject(t, document, "result")

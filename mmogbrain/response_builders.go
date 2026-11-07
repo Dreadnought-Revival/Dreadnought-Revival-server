@@ -5870,6 +5870,12 @@ func buildMmogTunePayload() []byte {
 	return b
 }
 
+// encodeTuneTable is one table in the document's encoding (tune_reply.go).
+func encodeTuneTable(t tuneTable) []byte {
+	b, _ := appendTuneTable(nil, nil, t.name, t.json)
+	return b
+}
+
 type tuneTable struct {
 	name string
 	json string
@@ -5917,7 +5923,7 @@ func tuneTablesInPriorityOrder() []tuneTable {
 	kept := make([]tuneTable, 0, len(candidates))
 	var accepted []byte
 	for _, candidate := range candidates {
-		trial := append(append([]byte{}, accepted...), candidate.json...)
+		trial := append(append([]byte{}, accepted...), encodeTuneTable(candidate)...)
 		if size := len(compressMmogDocument(trial)); size > responseBudget(tuneTableByteBudget) {
 			logrus.WithFields(logrus.Fields{
 				"table": candidate.name, "raw": len(candidate.json),
@@ -5937,7 +5943,11 @@ func tuneTablesInPriorityOrder() []tuneTable {
 }
 
 // buildMmogTuneDocument is the document carried, zlib-compressed, in "packed".
-func buildMmogTuneDocument() []byte {
+func buildMmogTuneDocument() []byte { return buildMmogTuneDocumentVersion(tuneApplyVersion) }
+
+// buildMmogTuneDocumentVersion is the document with the given tune version
+// (tune_reply.go: the client's own "0.0.0" makes Set change nothing).
+func buildMmogTuneDocumentVersion(version string) []byte {
 	var b []byte
 	var stack []int
 
@@ -6055,8 +6065,12 @@ func buildMmogTuneDocument() []byte {
 	//
 	// Whole, never truncated: a partial table is exactly the missing-row error
 	// above, just for the rows that fell off the end.
+	//
+	// CHANGED 2026-11-07: each table is a nested ARRAY of row objects keyed by
+	// "Name", not one string of JSON text -- the client's rebuild walks the
+	// table node's children (tune_reply.go). A string has none.
 	for _, table := range tuneTablesInPriorityOrder() {
-		b = protocol.AppendStringField(b, table.name, table.json)
+		b, stack = appendTuneTable(b, stack, table.name, table.json)
 	}
 
 	// MetaData goes LAST, and that placement is the fix, not a style choice.
@@ -6084,7 +6098,7 @@ func buildMmogTuneDocument() []byte {
 	// An empty version is not cosmetic: the client compares it to decide whether
 	// its cached tuning is current, so everything above stays unapplied.
 	b, stack = protocol.AppendObjectStart(b, stack, "MetaData")
-	b = protocol.AppendStringField(b, "Version", "1.0.0")
+	b = protocol.AppendStringField(b, "Version", version)
 	b, stack = protocol.AppendObjectEnd(b, stack)
 
 	b, _ = protocol.AppendObjectEnd(b, stack)

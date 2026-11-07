@@ -35,9 +35,9 @@ func TestWeaponsTuneUsesAssetRowNames(t *testing.T) {
 
 	byName := make(map[string]map[string]any, len(rows))
 	for _, row := range rows {
-		name, _ := row["RowName"].(string)
+		name, _ := row["Name"].(string)
 		if name == "" {
-			t.Fatalf("a WeaponsTune row has no RowName: %v", row)
+			t.Fatalf("a WeaponsTune row has no Name: %v", row)
 		}
 		byName[name] = row
 	}
@@ -71,8 +71,8 @@ func TestOfficersTuneUsesAssetRowNames(t *testing.T) {
 		t.Fatal("OfficersTune is empty")
 	}
 	for _, row := range rows {
-		if name, _ := row["RowName"].(string); name == "" {
-			t.Fatalf("an OfficersTune row has no RowName: %v", row)
+		if name, _ := row["Name"].(string); name == "" {
+			t.Fatalf("an OfficersTune row has no Name: %v", row)
 		}
 	}
 	t.Logf("OfficersTune carries %d rows", len(rows))

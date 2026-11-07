@@ -99,7 +99,7 @@ func buildMmogRequestResponsePayload(requestName string, playerPID string, paylo
 	case "YA_FleetEligibility":
 		return buildMmogFleetEligibilityPayload()
 	case "YA_Tune":
-		return buildMmogTunePayload()
+		return buildMmogTuneReplyFor(playerPID) // tune_reply.go
 
 	// --- Matchmaking & Rooms ---
 	case "YA_EnterMatchmaking":

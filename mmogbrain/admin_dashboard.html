@@ -324,6 +324,13 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
         </div>
         <div class="muted">Kick drops the player's connections; they can sign in again. Ban also keeps them out until unbanned.</div>
       </section>
+      <section><h2>Tune channel test</h2>
+        <div class="row">
+          <select id="mTune"><option value="">Off (normal)</option><option value="check">Check: reply with the client's own version (changes nothing)</option><option value="apply">Apply: replace the client's tables with the server's</option></select>
+          <button class="btn" id="mTuneSave">Set</button>
+        </div>
+        <div class="muted">For testing balancing through the game's tune channel (#16). Takes effect at this account's next login. "Apply" can break abilities for this account; battle servers keep their own values.</div>
+      </section>
       <section><h2>Fair play</h2>
         <div class="row"><button class="btn" id="mFairPlay">Fair-play checks of this player</button></div>
       </section>
@@ -538,6 +545,7 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     $('mCards').replaceChildren(card('Credits', fmt(d.credits)), card('GP', fmt(d.premium)), card('Free XP', fmt(d.free_xp)), card('Rank', fmt(d.rank)),
       card('Matches', fmt(d.matches)), card('Win rate', d.matches ? Math.round(100 * d.wins / d.matches) + ' %' : '—'), card('K/D', kd),
       card('Last match', d.last_match ? ago(d.last_match) + ' ago' : 'never', true), card('Account created', (d.created || '').slice(0, 10), true));
+    $('mTune').value = d.tune_test || '';
     $('mBanned').classList.toggle('hidden', !d.banned);
     $('mBanned').textContent = d.banned ? `Banned since ${d.banned_at} UTC: ${d.ban_reason}` : '';
     $('mBan').classList.toggle('hidden', !!d.banned);
@@ -655,6 +663,11 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     if (!name) { $('mMsg').className = 'err'; $('mMsg').textContent = 'Enter the new name.'; return; }
     if (!confirm(`Rename ${$('mName').textContent} to ${name}?` + (out ? '\n\nThey are signed out of the game now.' : ''))) return;
     post(`/players/${managed}/rename`, { name, signout: out }, `Renamed to ${name}.`).then((ok) => { if (ok) { $('mNewName').value = ''; $('mRenameSignOut').checked = false; } });
+  };
+  $('mTuneSave').onclick = () => {
+    const mode = $('mTune').value;
+    if (mode === 'apply' && !confirm('Send the full tune reply to this account at its next login? Abilities may break for it until it is set back.')) return;
+    post(`/players/${managed}/tune-test`, { mode }, mode ? `Tune test "${mode}" set; it applies at the next login.` : 'Tune test off.');
   };
   $('mPwCopy').onclick = async () => {
     try { await navigator.clipboard.writeText($('mPw').textContent); $('mPwCopy').textContent = 'Copied'; setTimeout(() => ($('mPwCopy').textContent = 'Copy'), 1500); }
