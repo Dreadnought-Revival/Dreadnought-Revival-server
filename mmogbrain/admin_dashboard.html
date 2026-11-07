@@ -106,6 +106,7 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     <button data-tab="economy">Economy</button>
     <button data-tab="market">Market</button>
     <button data-tab="techtree">Tech tree</button>
+    <button data-tab="tune">Balancing</button>
     <button data-tab="modes">Game modes</button>
     <button data-tab="messages">Messages</button>
     <button data-tab="matches">Matches</button>
@@ -279,6 +280,36 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     <div class="table-wrap"><table><thead><tr><th>Node</th><th>Research XP</th><th>Purchase price</th><th>Warnings</th></tr></thead><tbody id="ttNodes"></tbody></table></div>
     <div class="row" style="margin-top:8px"><button class="btn" id="ttSave">Save changes</button><span class="muted" id="ttShipProgress"></span></div>
     <p id="ttMsg"></p>
+  </div>
+
+  <div id="tab-tune" class="hidden">
+    <div class="row"><span class="chip" id="tnLive"></span><span class="chip" id="tnPending"></span><span class="muted" id="tnWho"></span></div>
+    <div class="row"><span class="muted">Balancing goes to the game through its tune channel. A published version reaches only accounts set to "Apply" on their player panel (Tune channel test), at their next login. Battle servers still use their own values, so a change shows in the game's stats panels but does not yet change damage in a match (#16).</span></div>
+    <section class="manage" style="margin-top:0"><h2>Edit</h2>
+      <div class="row">
+        <select id="tnTable"></select>
+        <input id="tnSearch" type="search" placeholder="Search a row, e.g. WP_Dreadnought">
+        <button class="btn" id="tnFind">Find</button><span class="muted" id="tnFound"></span>
+      </div>
+      <div class="row" id="tnRows"></div>
+      <div id="tnRowBox" class="hidden">
+        <h3 id="tnRowName" style="margin:8px 0"></h3>
+        <div class="table-wrap"><table><thead><tr><th>Field</th><th>Game value</th><th>Live</th><th>New value</th></tr></thead><tbody id="tnFields"></tbody></table></div>
+        <div class="row" style="margin-top:8px"><button class="btn" id="tnSaveRow">Save to draft</button><span class="muted">Setting a field back to the game value removes it from the draft.</span></div>
+      </div>
+      <p id="tnMsg"></p>
+    </section>
+    <section><h2>Draft (what Publish makes live)</h2>
+      <div class="table-wrap"><table><thead><tr><th>Table</th><th>Row</th><th>Field</th><th>Game</th><th>Live</th><th>Draft</th><th></th></tr></thead><tbody id="tnDiff"></tbody></table></div>
+      <div class="row" style="margin-top:8px">
+        <input id="tnNote" type="text" maxlength="300" placeholder="Note for this version, e.g. +10% Dreadnought primary damage" style="flex:1;min-width:240px">
+        <button class="btn danger" id="tnPublish">Publish</button><button class="btn" id="tnDiscard">Discard draft</button>
+      </div>
+    </section>
+    <section><h2>Versions</h2>
+      <div class="table-wrap"><table><thead><tr><th>Version</th><th>When (UTC)</th><th class="num">Changes</th><th>Note</th><th>From</th><th></th></tr></thead><tbody id="tnVersions"></tbody></table></div>
+      <div class="row" style="margin-top:8px"><button class="btn" id="tnDefaults">Put the game's own values in the draft</button></div>
+    </section>
   </div>
 
   <div id="tab-instances" class="hidden">
@@ -1094,6 +1125,78 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     } catch (e) { if (e.message !== 'forbidden') { msg.className = 'err'; msg.textContent = 'Import failed: ' + String(e.message || e); } }
   };
 
+  // --- balancing (tune) --------------------------------------------------
+  let tnRow = null; let tnTableLoaded = false;
+  const tnShow = (v) => (v === null || v === undefined ? '—' : typeof v === 'boolean' ? (v ? 'true' : 'false') : String(v));
+  function renderTune(d) {
+    $('tnLive').textContent = `Live: ${d.live}`;
+    $('tnPending').textContent = d.pending ? `${d.pending} unpublished change${d.pending > 1 ? 's' : ''}` : 'Draft = live';
+    const apply = d.test_accounts.filter((a) => a.mode === 'apply').map((a) => a.name);
+    const check = d.test_accounts.filter((a) => a.mode === 'check').map((a) => a.name);
+    $('tnWho').textContent = d.everyone ? 'Sent to EVERYONE (DN_TUNE_SEND=1).'
+      : (apply.length ? `Sent to: ${apply.join(', ')}.` : 'No account is set to Apply, so nobody receives it.') + (check.length ? ` Check only: ${check.join(', ')}.` : '');
+    const sel = $('tnTable');
+    if (!tnTableLoaded) { d.tables.filter((t) => t.editable).forEach((t) => sel.append(el('option', { value: t.name }, `${t.name} (${fmt(t.rows)} rows)`))); tnTableLoaded = true; }
+    fill('tnDiff', d.diff.map((x) => el('tr', {}, el('td', {}, x.table), el('td', {}, x.row), el('td', {}, x.field),
+      el('td', { class: 'num' }, tnShow(x.original)), el('td', { class: 'num' }, tnShow(x.published)), el('td', { class: 'num' }, tnShow(x.draft)),
+      el('td', {}, String(x.draft) === String(x.published) ? '' : el('a', { class: 'link', onclick: () => tnDraft([{ table: x.table, row: x.row, field: x.field, value: x.published ?? null }], 'Undone.') }, 'undo')))),
+      'No changes: the game\'s own values.', 7);
+    fill('tnVersions', d.versions.map((v) => el('tr', {}, el('td', {}, v.version + (v.live ? ' (live)' : '')), el('td', {}, v.at), el('td', { class: 'num' }, fmt(v.changes)),
+      el('td', { class: 'results' }, v.note), el('td', { class: 'muted' }, v.actor),
+      el('td', {}, el('button', { class: 'btn', onclick: () => tnRestore(v.id, `Version ${v.version}`) }, 'Restore into draft')))), 'Nothing published yet.', 6);
+  }
+  async function loadTune() { renderTune(await api('/tune')); }
+  async function tnCall(path, body, ok) {
+    const msg = $('tnMsg');
+    try { renderTune(await postJSON('/tune' + path, body)); msg.className = 'ok'; msg.textContent = ok; if (tnRow) tnOpenRow(tnRow); return true; }
+    catch (e) { if (e.message !== 'forbidden') { msg.className = 'err'; msg.textContent = String(e.message || e); } return false; }
+  }
+  const tnDraft = (changes, ok) => tnCall('/draft', { changes }, ok);
+  async function tnFind() {
+    const q = $('tnSearch').value.trim();
+    const d = await api(`/tune/table/${$('tnTable').value}?q=${encodeURIComponent(q)}`);
+    $('tnFound').textContent = d.total > d.rows.length ? `${d.total} rows match; showing ${d.rows.length}` : `${d.total} row${d.total === 1 ? '' : 's'}`;
+    $('tnRows').replaceChildren(...d.rows.map((r) => el('button', { class: 'btn', onclick: () => tnOpenRow(r.name) }, r.name)));
+  }
+  async function tnOpenRow(name) {
+    tnRow = name;
+    const d = await api(`/tune/table/${$('tnTable').value}?q=${encodeURIComponent(name)}`);
+    const row = d.rows.find((r) => r.name === name); if (!row) return;
+    $('tnRowBox').classList.remove('hidden'); $('tnRowName').textContent = name;
+    fill('tnFields', row.fields.map((f) => {
+      const cur = f.draft ?? f.published ?? f.original;
+      let input;
+      if (f.kind === 'bool') { input = el('select', { 'data-field': f.field, 'data-kind': f.kind }); ['true', 'false'].forEach((o) => input.append(el('option', { value: o }, o))); input.value = String(cur); }
+      else if (f.kind === 'number' || f.kind === 'string') input = el('input', { type: f.kind === 'number' ? 'number' : 'text', step: 'any', value: String(cur), 'data-field': f.field, 'data-kind': f.kind, style: 'width:140px' });
+      else input = el('span', { class: 'muted' }, 'not editable');
+      if (input.dataset) { input.dataset.orig = String(f.original); input.dataset.cur = String(cur); }
+      return el('tr', {}, el('td', {}, f.field), el('td', { class: 'num' }, tnShow(f.original)), el('td', { class: 'num' }, tnShow(f.published)), el('td', {}, input));
+    }), 'No fields.', 4);
+  }
+  $('tnFind').onclick = tnFind;
+  $('tnSearch').onkeydown = (e) => { if (e.key === 'Enter') tnFind(); };
+  $('tnTable').onchange = () => { $('tnRows').replaceChildren(); $('tnRowBox').classList.add('hidden'); tnRow = null; };
+  $('tnSaveRow').onclick = () => {
+    const changes = [];
+    document.querySelectorAll('#tnFields [data-field]').forEach((inp) => {
+      const raw = inp.value.trim(); if (raw === inp.dataset.cur) return;
+      let value = raw;
+      if (inp.dataset.kind === 'number') { if (raw === '' || isNaN(Number(raw))) return; value = Number(raw); }
+      if (inp.dataset.kind === 'bool') value = raw === 'true';
+      if (String(value) === inp.dataset.orig) value = null; // back to the game's value
+      changes.push({ table: $('tnTable').value, row: tnRow, field: inp.dataset.field, value });
+    });
+    if (!changes.length) { $('tnMsg').className = 'muted'; $('tnMsg').textContent = 'Nothing changed.'; return; }
+    tnDraft(changes, `${changes.length} field${changes.length > 1 ? 's' : ''} saved to the draft.`);
+  };
+  $('tnPublish').onclick = () => {
+    if (!confirm('Publish the draft as the new live balancing version? Accounts set to Apply get it at their next login.')) return;
+    tnCall('/publish', { note: $('tnNote').value.trim() }, 'Published.').then((ok) => { if (ok) $('tnNote').value = ''; });
+  };
+  $('tnDiscard').onclick = () => { if (confirm('Throw the draft away and go back to the live version?')) tnCall('/discard', {}, 'Draft discarded.'); };
+  function tnRestore(id, label) { if (confirm(`Put ${label} into the draft? Publish it to make it live.`)) tnCall('/restore', { id }, `${label} is in the draft; publish to make it live.`); }
+  $('tnDefaults').onclick = () => tnRestore(0, "the game's own values");
+
   // --- economy ------------------------------------------------------------
   let economyShown = false;
   function renderEconomy(d) {
@@ -1169,7 +1272,7 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
   }
 
   const loaders = {
-    overview: loadOverview, metrics: loadMetrics, moderation: loadModeration, fairplay: loadFairPlay, economy: loadEconomy, market: loadMarket, techtree: loadTechTree, modes: loadModes, messages: loadMessages, instances: loadInstances, players: () => Promise.all([loadOnline(), loadPlayers()]),
+    overview: loadOverview, metrics: loadMetrics, moderation: loadModeration, fairplay: loadFairPlay, economy: loadEconomy, market: loadMarket, techtree: loadTechTree, tune: loadTune, modes: loadModes, messages: loadMessages, instances: loadInstances, players: () => Promise.all([loadOnline(), loadPlayers()]),
     matches: loadMatches, reports: loadReports, telemetry: loadTelemetry, logs: loadLog,
   };
   async function refresh() {

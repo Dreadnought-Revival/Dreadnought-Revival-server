@@ -543,6 +543,24 @@ var migrations = []string{
 		updated_at TEXT NOT NULL DEFAULT (datetime('now')),
 		PRIMARY KEY (item_id, field)
 	)`,
+	// The balancing editor (tune_editor.go): the working draft, one row per
+	// changed field (value as JSON), and every published version with the
+	// full set of its changes.
+	`CREATE TABLE IF NOT EXISTS tune_draft (
+		table_name TEXT NOT NULL,
+		row_name   TEXT NOT NULL,
+		field      TEXT NOT NULL,
+		value      TEXT NOT NULL,
+		updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (table_name, row_name, field)
+	)`,
+	`CREATE TABLE IF NOT EXISTS tune_versions (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		actor      TEXT NOT NULL DEFAULT '',
+		note       TEXT NOT NULL DEFAULT '',
+		changes    TEXT NOT NULL
+	)`,
 }
 
 func Open(path string) (*sql.DB, error) {

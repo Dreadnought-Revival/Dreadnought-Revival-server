@@ -60,7 +60,7 @@ import (
 
 const (
 	tuneCheckVersion = "0.0.0"
-	tuneApplyVersion = "1.0.0"
+	tuneApplyVersion = "1.0.0" // with no balancing version published (tune_editor.go)
 )
 
 var tuneTestAccounts struct {
@@ -103,7 +103,7 @@ func buildMmogTuneReplyFor(pid string) []byte {
 	if mode == "" {
 		return buildMmogTunePayload() // dropped by the client unless DN_TUNE_SEND=1 (see there)
 	}
-	version := tuneApplyVersion
+	version := liveTuneVersion() // tune_editor.go: "1.0.<live version>"
 	if mode == "check" {
 		version = tuneCheckVersion
 	}

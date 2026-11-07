@@ -5905,9 +5905,11 @@ func tuneTablesInPriorityOrder() []tuneTable {
 	}
 
 	candidates := []tuneTable{
-		{"WeaponsTune", dreadconfig.WeaponsTuneJSON()},
-		{"ProjectilesTune", dreadconfig.ProjectilesTuneJSON()},
-		{"OfficersTune", dreadconfig.OfficersTuneJSON()},
+		// The live balancing version from the admin dashboard, if any
+		// (tune_editor.go); otherwise the game's own tables.
+		{"WeaponsTune", liveTuneTableJSON("WeaponsTune", dreadconfig.WeaponsTuneJSON())},
+		{"ProjectilesTune", liveTuneTableJSON("ProjectilesTune", dreadconfig.ProjectilesTuneJSON())},
+		{"OfficersTune", liveTuneTableJSON("OfficersTune", dreadconfig.OfficersTuneJSON())},
 		{"GameModifiersTune", dreadconfig.GameModifiersTuneJSON()},
 		{"AbilitiesTune", dreadconfig.AbilitiesTuneJSON()},
 		{"FeatsTune", dreadconfig.FeatsTuneJSON()},
@@ -5943,7 +5945,7 @@ func tuneTablesInPriorityOrder() []tuneTable {
 }
 
 // buildMmogTuneDocument is the document carried, zlib-compressed, in "packed".
-func buildMmogTuneDocument() []byte { return buildMmogTuneDocumentVersion(tuneApplyVersion) }
+func buildMmogTuneDocument() []byte { return buildMmogTuneDocumentVersion(liveTuneVersion()) }
 
 // buildMmogTuneDocumentVersion is the document with the given tune version
 // (tune_reply.go: the client's own "0.0.0" makes Set change nothing).
