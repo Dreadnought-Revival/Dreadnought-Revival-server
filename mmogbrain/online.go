@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"net"
 	"net/http"
 	"sort"
 )
@@ -41,9 +40,7 @@ func (h *socialHub) onlinePlayers() []onlinePlayer {
 // GET /online -> {"count": N, "players": [...]}. Loopback only: it names
 // players, which is not for the internet.
 func onlineHandler(w http.ResponseWriter, r *http.Request) {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil || !net.ParseIP(host).IsLoopback() {
-		http.Error(w, "loopback only", http.StatusForbidden)
+	if refuseUnlessLoopback(w, r) {
 		return
 	}
 	players := []onlinePlayer{}

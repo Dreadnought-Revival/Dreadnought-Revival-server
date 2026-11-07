@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path"
 	"strings"
 	"sync"
 	"syscall"
@@ -201,6 +202,12 @@ func main() {
 			return
 		}
 
+		if machineLocalPath(r.URL.Path) {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			log.WithFields(logrus.Fields{"path": r.URL.Path, "remote": r.RemoteAddr}).Warn("blocked machine-local path")
+			return
+		}
+
 		host := r.Host
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			host = h
@@ -373,4 +380,15 @@ type responseWriter struct {
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.status = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+// machineLocalPath reports the mmogbrain routes that only this machine may
+// call: /battle/ (the battle-server mod: loadouts, results that pay out,
+// tuning) and /online (names players). Proxied, they reached mmogbrain from
+// 127.0.0.1 and passed its loopback checks, so the internet could call them
+// (found 2026-11-07; mmogbrain now also refuses forwarded requests). Cleaned
+// first, so /x/../battle/ is caught too.
+func machineLocalPath(p string) bool {
+	p = path.Clean("/" + p)
+	return p == "/online" || p == "/battle" || strings.HasPrefix(p, "/battle/")
 }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 
@@ -31,9 +30,7 @@ import (
 // secret passed through Wine. Plain "key=value" lines so the mod parses it
 // without a JSON library.
 func battleLoadoutHandler(w http.ResponseWriter, r *http.Request) {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil || !net.ParseIP(host).IsLoopback() {
-		http.Error(w, "loopback only", http.StatusForbidden)
+	if refuseUnlessLoopback(w, r) {
 		return
 	}
 	pid := normalizedPlayerStatePID(r.URL.Query().Get("pid"))
@@ -92,9 +89,7 @@ func formatBattleLoadout(id, pid string, loadout mmogShipLoadoutSeed) string {
 // 3-player proving ground joined without it and everyone was a number again.
 // Loopback only, like /battle/loadout.
 func battlePlayerHandler(w http.ResponseWriter, r *http.Request) {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil || !net.ParseIP(host).IsLoopback() {
-		http.Error(w, "loopback only", http.StatusForbidden)
+	if refuseUnlessLoopback(w, r) {
 		return
 	}
 	pid := protocol.NormalizePlayerPID(r.URL.Query().Get("pid"))

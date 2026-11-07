@@ -3,7 +3,6 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -118,9 +117,7 @@ func payHavocMilestones(tx *sql.Tx, pid, match string, score int32, now time.Tim
 //
 //	lifetime=<n>\nweekly=<n>\nsum=<n>\nreset=<unix seconds>\nfreexp=<n>\ncredits=<n>\n
 func battleHavocHandler(w http.ResponseWriter, r *http.Request) {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil || !net.ParseIP(host).IsLoopback() {
-		http.Error(w, "loopback only", http.StatusForbidden)
+	if refuseUnlessLoopback(w, r) {
 		return
 	}
 	q := r.URL.Query()

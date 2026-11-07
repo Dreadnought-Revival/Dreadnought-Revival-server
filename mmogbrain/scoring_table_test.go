@@ -105,6 +105,16 @@ func TestBattleScoringIsLoopbackOnly(t *testing.T) {
 			t.Errorf("%s: %d, want %d", addr, rec.Code, want)
 		}
 	}
+	// Through the public gateway: the connection is loopback, the request
+	// is not (2026-11-07, the gateway forwarded /battle/ to the internet).
+	req := httptest.NewRequest(http.MethodGet, "/battle/scoring", nil)
+	req.RemoteAddr = "127.0.0.1:5000"
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+	rec := httptest.NewRecorder()
+	battleScoringHandler(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("forwarded request: %d, want 403", rec.Code)
+	}
 }
 
 // The original table (data/scoring/ScoringTable.json, from the operator's

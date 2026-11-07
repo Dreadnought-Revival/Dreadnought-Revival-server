@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -95,9 +94,7 @@ func battleTuneText() string {
 // battleTuneHandler answers the battle-server mod (loopback only, like the
 // other /battle/ routes).
 func battleTuneHandler(w http.ResponseWriter, r *http.Request) {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil || !net.ParseIP(host).IsLoopback() {
-		http.Error(w, "loopback only", http.StatusForbidden)
+	if refuseUnlessLoopback(w, r) {
 		return
 	}
 	text := battleTuneText()

@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -300,9 +299,7 @@ func (r battleRewards) split(base, performance int32, bonuses []float64, fleetTy
 }
 
 func battleResultHandler(w http.ResponseWriter, r *http.Request) {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil || !net.ParseIP(host).IsLoopback() {
-		http.Error(w, "loopback only", http.StatusForbidden)
+	if refuseUnlessLoopback(w, r) {
 		return
 	}
 	q := r.URL.Query()

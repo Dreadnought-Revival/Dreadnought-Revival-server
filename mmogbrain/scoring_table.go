@@ -1,7 +1,6 @@
 package main
 
 import (
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -315,9 +314,7 @@ func scoringDisplayName(event string) string {
 // would sit in the client's response slot (no frame header, no request id).
 // Loopback only, like the other /battle/ endpoints.
 func battleScoringHandler(w http.ResponseWriter, r *http.Request) {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil || !net.ParseIP(host).IsLoopback() {
-		http.Error(w, "loopback only", http.StatusForbidden)
+	if refuseUnlessLoopback(w, r) {
 		return
 	}
 	doc := scoringDocument()

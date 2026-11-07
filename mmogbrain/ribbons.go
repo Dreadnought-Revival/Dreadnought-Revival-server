@@ -3,7 +3,6 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -154,9 +153,7 @@ func recordRibbons(database *sql.DB, pid string, ribbons map[string]int32) {
 //
 // values for the mode (scoringValueFor). Loopback only.
 func battleRibbonsHandler(w http.ResponseWriter, r *http.Request) {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil || !net.ParseIP(host).IsLoopback() {
-		http.Error(w, "loopback only", http.StatusForbidden)
+	if refuseUnlessLoopback(w, r) {
 		return
 	}
 	mode := scoringModeCode(r.URL.Query().Get("mode"))
