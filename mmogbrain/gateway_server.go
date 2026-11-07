@@ -228,6 +228,8 @@ func handleGWLogin(w http.ResponseWriter, r *http.Request, claims jwt.MapClaims)
 		http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 		return
 	}
+	// Renamed after this token was issued (player_rename.go).
+	username = accountNameAtLogin(userID, username, claims)
 	// Banned from the admin dashboard (admin_moderation.go): the launcher
 	// token is still valid for up to 24 h, so the ban is enforced here.
 	if adminPlayerBanned(userID) {
@@ -437,6 +439,8 @@ func handleGWSessionCreate(w http.ResponseWriter, r *http.Request, claims jwt.Ma
 		http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 		return
 	}
+	// Renamed after this token was issued (player_rename.go).
+	username = accountNameAtLogin(userID, username, claims)
 
 	authHdr := r.Header.Get("Authorization")
 	sessionID := ""

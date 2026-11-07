@@ -27,6 +27,7 @@ func registerAdminPlayerManagement(api *mux.Router) {
 	api.HandleFunc("/players/{pid}/currency", adminAPIPlayerCurrency).Methods(http.MethodPost)
 	api.HandleFunc("/players/{pid}/ships", adminAPIPlayerGrantShip).Methods(http.MethodPost)
 	api.HandleFunc("/players/{pid}/contracts/reset", adminAPIPlayerResetContracts).Methods(http.MethodPost)
+	api.HandleFunc("/players/{pid}/rename", adminAPIPlayerRename).Methods(http.MethodPost)
 }
 
 type adminContract struct {

@@ -236,6 +236,12 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
         <div class="row"><button class="btn" id="mFairPlay">Fair-play checks of this player</button></div>
       </section>
       <section><h2>Account</h2>
+        <div class="row">
+          <input id="mNewName" type="text" maxlength="20" placeholder="New name" style="flex:1;min-width:180px">
+          <label class="muted" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="mRenameSignOut"> Sign out now</label>
+          <button class="btn" id="mRename">Rename</button>
+        </div>
+        <div class="muted" style="margin-bottom:10px">Changes the sign-in name and the name in the game and chat. 3-20 letters, digits, single spaces, - _ . (no #). The game shows it at the player's next login; "Sign out now" makes that happen right away. They can still sign in with their email; tell them the new name.</div>
         <div class="row"><button class="btn danger" id="mResetPw">Reset password</button></div>
         <div class="row hidden" id="mPwBox">
           <span class="muted">New password:</span>
@@ -461,7 +467,8 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     const msg = $('mMsg');
     try {
       renderManage(await postJSON(path, body)); msg.className = 'ok'; msg.textContent = okMsg; loadPlayers(); loadManageHistory(managed);
-    } catch (e) { if (e.message !== 'forbidden') { msg.className = 'err'; msg.textContent = String(e.message || e); } }
+      return true;
+    } catch (e) { if (e.message !== 'forbidden') { msg.className = 'err'; msg.textContent = String(e.message || e); } return false; }
   }
   function amounts() {
     const out = {};
@@ -525,6 +532,12 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
       msg.className = 'ok'; msg.textContent = 'Password reset. Copy it now -- it is not shown again.';
       loadManageHistory(managed);
     } catch (e) { if (e.message !== 'forbidden') { msg.className = 'err'; msg.textContent = String(e.message || e); } }
+  };
+  $('mRename').onclick = () => {
+    const name = $('mNewName').value.trim(); const out = $('mRenameSignOut').checked;
+    if (!name) { $('mMsg').className = 'err'; $('mMsg').textContent = 'Enter the new name.'; return; }
+    if (!confirm(`Rename ${$('mName').textContent} to ${name}?` + (out ? '\n\nThey are signed out of the game now.' : ''))) return;
+    post(`/players/${managed}/rename`, { name, signout: out }, `Renamed to ${name}.`).then((ok) => { if (ok) { $('mNewName').value = ''; $('mRenameSignOut').checked = false; } });
   };
   $('mPwCopy').onclick = async () => {
     try { await navigator.clipboard.writeText($('mPw').textContent); $('mPwCopy').textContent = 'Copied'; setTimeout(() => ($('mPwCopy').textContent = 'Copy'), 1500); }

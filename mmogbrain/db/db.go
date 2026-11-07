@@ -511,6 +511,9 @@ var migrations = []string{
 		updated_at TEXT NOT NULL DEFAULT (datetime('now')),
 		PRIMARY KEY (match_id, user_id)
 	)`,
+	// When an admin last renamed the player (player_rename.go, Unix s): a
+	// launcher token issued before it carries the old name.
+	`ALTER TABLE player_state ADD COLUMN name_changed_at INTEGER NOT NULL DEFAULT 0`,
 }
 
 func Open(path string) (*sql.DB, error) {
