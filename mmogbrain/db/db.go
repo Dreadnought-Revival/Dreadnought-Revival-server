@@ -500,6 +500,17 @@ var migrations = []string{
 	// The GP a claim paid on top of the credits (contract_gp_reward,
 	// economy_settings.go, 2026-11-07); 0 for every claim before it.
 	`ALTER TABLE player_daily_contracts ADD COLUMN gp_paid INTEGER NOT NULL DEFAULT 0`,
+	// An admin's review of a fair-play check result (fair_play_admin.go):
+	// false_positive, watch or confirmed, with a note. A note only.
+	`CREATE TABLE IF NOT EXISTS fair_play_reviews (
+		match_id   TEXT NOT NULL,
+		user_id    TEXT NOT NULL,
+		status     TEXT NOT NULL,
+		note       TEXT NOT NULL DEFAULT '',
+		actor      TEXT NOT NULL DEFAULT '',
+		updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (match_id, user_id)
+	)`,
 }
 
 func Open(path string) (*sql.DB, error) {

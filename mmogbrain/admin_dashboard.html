@@ -100,6 +100,7 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     <button data-tab="instances">Battle servers</button>
     <button data-tab="players">Players</button>
     <button data-tab="moderation">Moderation</button>
+    <button data-tab="fairplay">Fair play</button>
     <button data-tab="economy">Economy</button>
     <button data-tab="matches">Matches</button>
     <button data-tab="reports">Bug reports</button>
@@ -147,6 +148,33 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     <section><h2>Admin actions</h2>
       <div class="table-wrap"><table><thead><tr><th>When (UTC)</th><th>Action</th><th>Target</th><th>Details</th><th>From</th></tr></thead><tbody id="auditRows"></tbody></table></div>
     </section>
+  </div>
+
+  <div id="tab-fairplay" class="hidden">
+    <div class="row"><span class="muted" id="fpRules"></span></div>
+    <div class="row">
+      <label><input type="checkbox" id="fpFlagged" checked> Only flagged</label>
+      <label><input type="checkbox" id="fpUnreviewed"> Only unreviewed</label>
+      <select id="fpMode"><option value="">All modes</option></select>
+      <select id="fpClass"><option value="">All ship classes</option></select>
+      <select id="fpDays"><option value="1">Last 24 h</option><option value="7" selected>Last 7 days</option><option value="30">Last 30 days</option><option value="">All time</option></select>
+      <button class="btn" id="fpLoad">Show</button>
+    </div>
+    <div class="row hidden" id="fpScope"><span class="chip" id="fpScopeText"></span><button class="btn" id="fpScopeClear">Show everyone</button></div>
+    <div id="fpReview" class="manage hidden">
+      <div class="row" style="justify-content:space-between;margin:0">
+        <div><h3 id="fprTitle"></h3><div class="muted" id="fprInfo"></div></div>
+        <button class="btn" id="fprClose">Close</button>
+      </div>
+      <div class="fields">
+        <label>Review<select id="fprStatus"><option value="false_positive">False positive</option><option value="watch">Watch</option><option value="confirmed">Confirmed</option></select></label>
+        <label style="grid-column: span 2">Note<input id="fprNote" type="text" maxlength="500" placeholder="What you checked"></label>
+      </div>
+      <div class="row"><button class="btn" id="fprSave">Save review</button><button class="btn" id="fprClear">Remove review</button>
+        <span class="muted">A review is a note for admins and goes in the player's audit log. It does nothing to the player.</span></div>
+      <p id="fprMsg"></p>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>When (UTC)</th><th>Player</th><th>Match</th><th>Flags</th><th>Speed: sustained / bots (u/s)</th><th class="num">Jumps</th><th class="num">Damage reported / measured</th><th>Received: reported / measured</th><th>Review</th><th></th></tr></thead><tbody id="fpRows"></tbody></table></div>
   </div>
 
   <div id="tab-economy" class="hidden">
@@ -203,6 +231,9 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
           <button class="btn" id="mUnban">Unban</button>
         </div>
         <div class="muted">Kick drops the player's connections; they can sign in again. Ban also keeps them out until unbanned.</div>
+      </section>
+      <section><h2>Fair play</h2>
+        <div class="row"><button class="btn" id="mFairPlay">Fair-play checks of this player</button></div>
       </section>
       <section><h2>Account</h2>
         <div class="row"><button class="btn danger" id="mResetPw">Reset password</button></div>
@@ -619,6 +650,93 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
       el('td', { class: 'results' }, auditText(x.details)), el('td', { class: 'muted' }, x.actor))), 'No admin actions yet.', 5);
   }
 
+  // --- fair play ----------------------------------------------------------
+  const SHIP_CLASSES = { 1: 'Dreadnought (Light)', 2: 'Corvette (Light)', 3: 'Artillery Cruiser (Light)', 4: 'Tactical Cruiser (Light)', 5: 'Destroyer (Light)',
+    6: 'Dreadnought (Medium)', 7: 'Dreadnought (Heavy)', 8: 'Corvette (Medium)', 9: 'Corvette (Heavy)', 10: 'Artillery Cruiser (Medium)', 11: 'Artillery Cruiser (Heavy)',
+    12: 'Tactical Cruiser (Medium)', 13: 'Tactical Cruiser (Heavy)', 14: 'Destroyer (Medium)', 15: 'Destroyer (Heavy)' };
+  const REVIEW_NAMES = { false_positive: 'False positive', watch: 'Watch', confirmed: 'Confirmed' };
+  const fpScope = { pid: '', match: '', label: '' };
+  let fpSelected = null;
+  Object.entries(SHIP_CLASSES).forEach(([id, n]) => $('fpClass').append(el('option', { value: id }, n)));
+  const ratioText = (a, b) => (b ? (a / b).toFixed(2) + 'x' : '—');
+  function fpOpen(scope) {
+    Object.assign(fpScope, { pid: '', match: '', label: '' }, scope);
+    if (scope.match) $('fpFlagged').checked = false, $('fpUnreviewed').checked = false, $('fpDays').value = '';
+    if (scope.pid) $('fpDays').value = '';
+    if (tab === 'fairplay') loadFairPlay(); else show('fairplay');
+  }
+  async function loadFairPlay() {
+    const p = new URLSearchParams();
+    if ($('fpFlagged').checked) p.set('flagged', '1');
+    if ($('fpUnreviewed').checked) p.set('unreviewed', '1');
+    for (const [k, id] of [['mode', 'fpMode'], ['class', 'fpClass'], ['days', 'fpDays']]) if ($(id).value) p.set(k, $(id).value);
+    if (fpScope.pid) p.set('pid', fpScope.pid);
+    if (fpScope.match) p.set('match', fpScope.match);
+    const d = await api('/fairplay?' + p);
+    const modeSel = $('fpMode');
+    if (modeSel.options.length === 1) (d.modes || []).forEach((m) => modeSel.append(el('option', { value: m }, modeName(m))));
+    const t = d.thresholds;
+    $('fpRules').textContent = `The battle-server mod flags a player whose sustained speed (slowest of three seconds in a row) is over ${t.speed_bot_factor}x the bots' of the same class `
+      + `(when the bots flew it for ${t.speed_min_bot_samples}+ seconds) or over ${fmt(t.speed_flag_ups)} u/s, and damage dealt when the reported and measured figures differ `
+      + `beyond ${t.dealt_ratio_min}-${t.dealt_ratio_max}x past ${fmt(t.dealt_min)}. A one-second move over ${fmt(t.speed_jump_ups)} u is a jump (respawn, teleport), not speed. `
+      + 'A flag is a measurement, not proof: bot-heavy modes flag normal players (issue #10).';
+    $('fpScope').classList.toggle('hidden', !fpScope.pid && !fpScope.match);
+    let scope = fpScope.match ? `Match ${fpScope.label || fpScope.match}: every player, ${d.results.length} checked` : '';
+    if (fpScope.pid) {
+      const s = d.player || {};
+      scope = `${s.name || fpScope.label}: ${fmt(s.checked)} checked results, ${fmt(s.flagged)} flagged, ${fmt(s.reviewed)} reviewed`;
+    }
+    $('fpScopeText').textContent = scope;
+    fill('fpRows', d.results.map((x) => {
+      const speed = el('div', { class: 'results' });
+      x.speed.forEach((s) => speed.append(el('div', {}, `${s.class_name}: ${fmt(s.sustained)} / ${s.bots ? fmt(s.bots) : '—'}`
+        + (s.ratio ? ` (${s.ratio.toFixed(2)}x)` : s.bots ? ` (${fmt(s.bot_samples)} bot s, too few)` : ' (no bots)') + ` · fastest ${fmt(s.fastest)}`)));
+      const review = x.review ? el('span', { class: 'chip ' + (x.review.status === 'confirmed' ? 'bad' : x.review.status === 'watch' ? 'warn' : 'good'), title: x.review.note || '' },
+        REVIEW_NAMES[x.review.status] || x.review.status) : (x.flags.length ? el('span', { class: 'muted' }, 'not reviewed') : '');
+      return el('tr', {},
+        el('td', {}, x.at),
+        el('td', {}, el('a', { class: 'link', onclick: () => fpOpen({ pid: x.pid, label: x.name }) }, x.name)),
+        el('td', {}, el('a', { class: 'link', onclick: () => fpOpen({ match: x.match_id, label: `${modeName(x.mode)} on ${x.map}` }) }, `${modeName(x.mode)} · ${x.map || '?'}`),
+          el('div', { class: 'results' }, `${x.fleet} · ${x.outcome}`)),
+        el('td', {}, ...x.flags.map((f) => el('span', { class: 'chip bad' }, f))),
+        el('td', {}, speed),
+        el('td', { class: 'num' }, fmt(x.jumps)),
+        el('td', { class: 'num' }, `${fmt(x.damage_reported)} / ${fmt(x.damage_measured)}`, el('div', { class: 'results' }, ratioText(x.damage_reported, x.damage_measured) + ` · ${fmt(x.damage_hits)} hits`)),
+        el('td', { class: 'results' }, `${fmt(x.received)} / ${fmt(x.received_measured)} (${ratioText(x.received, x.received_measured)})`,
+          el('div', {}, `raw ${fmt(x.received_raw)} · shield ${fmt(x.received_shield)} · ${fmt(x.received_hits)} hits`)),
+        el('td', {}, review),
+        el('td', {}, el('button', { class: 'btn', onclick: () => fpReview(x) }, 'Review')));
+    }), $('fpFlagged').checked ? 'No flagged results with these filters.' : 'No checked results with these filters.', 10);
+  }
+  function fpReview(x) {
+    fpSelected = x;
+    $('fpReview').classList.remove('hidden');
+    $('fprTitle').textContent = `${x.name} · ${modeName(x.mode)} on ${x.map || '?'}`;
+    $('fprInfo').textContent = `${x.at} UTC · match ${x.match_id} · flags: ${x.flags.join(', ') || 'none'}`
+      + (x.review ? ` · reviewed ${x.review.at} UTC from ${x.review.actor}` : '');
+    $('fprStatus').value = x.review ? x.review.status : 'false_positive';
+    $('fprNote').value = x.review ? x.review.note : '';
+    $('fprClear').disabled = !x.review;
+    $('fprMsg').textContent = '';
+    $('fpReview').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  async function fpSaveReview(status) {
+    const msg = $('fprMsg'); const x = fpSelected; if (!x) return;
+    try {
+      await postJSON('/fairplay/review', { match_id: x.match_id, pid: x.pid, status, note: status ? $('fprNote').value : '' });
+      msg.className = 'ok'; msg.textContent = status ? 'Review saved.' : 'Review removed.';
+      $('fprClear').disabled = !status;
+      loadFairPlay();
+    } catch (e) { if (e.message !== 'forbidden') { msg.className = 'err'; msg.textContent = String(e.message || e); } }
+  }
+  $('fprSave').onclick = () => fpSaveReview($('fprStatus').value);
+  $('fprClear').onclick = () => { if (confirm('Remove this review?')) fpSaveReview(''); };
+  $('fprClose').onclick = () => { $('fpReview').classList.add('hidden'); fpSelected = null; };
+  $('fpLoad').onclick = loadFairPlay;
+  ['fpFlagged', 'fpUnreviewed', 'fpMode', 'fpClass', 'fpDays'].forEach((id) => ($(id).onchange = loadFairPlay));
+  $('fpScopeClear').onclick = () => { Object.assign(fpScope, { pid: '', match: '', label: '' }); $('fpFlagged').checked = true; $('fpDays').value = '7'; loadFairPlay(); };
+  $('mFairPlay').onclick = () => fpOpen({ pid: managed, label: $('mName').textContent });
+
   // --- economy ------------------------------------------------------------
   let economyShown = false;
   function renderEconomy(d) {
@@ -694,7 +812,7 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
   }
 
   const loaders = {
-    overview: loadOverview, metrics: loadMetrics, moderation: loadModeration, economy: loadEconomy, instances: loadInstances, players: () => Promise.all([loadOnline(), loadPlayers()]),
+    overview: loadOverview, metrics: loadMetrics, moderation: loadModeration, fairplay: loadFairPlay, economy: loadEconomy, instances: loadInstances, players: () => Promise.all([loadOnline(), loadPlayers()]),
     matches: loadMatches, reports: loadReports, telemetry: loadTelemetry, logs: loadLog,
   };
   async function refresh() {
