@@ -285,7 +285,8 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
 
   <div id="tab-tune" class="hidden">
     <div class="row"><span class="chip" id="tnLive"></span><span class="chip" id="tnPending"></span><span class="muted" id="tnWho"></span></div>
-    <div class="row"><span class="muted">Balancing goes to the game through its tune channel. A published version reaches only accounts set to "Apply" on their player panel (Tune channel test), at their next login. Battle servers still use their own values, so a change shows in the game's stats panels but does not yet change damage in a match (#16).</span></div>
+    <div class="row"><span class="chip" id="tnBattle"></span><button class="btn" id="tnBattleToggle"></button>
+      <span class="muted">Battle servers apply the live version from the next match on: weapons, projectiles and officers, for every player. The game's own stats panels show it only to accounts set to "Apply" on their player panel (Tune channel test), at their next login.</span></div>
     <section class="manage" style="margin-top:0"><h2>Edit</h2>
       <div class="row">
         <select id="tnTable"></select>
@@ -1162,6 +1163,14 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
   const tnShow = (v) => (v === null || v === undefined ? '—' : typeof v === 'boolean' ? (v ? 'true' : 'false') : String(v));
   function renderTune(d) {
     $('tnLive').textContent = `Live: ${d.live}`;
+    $('tnBattle').textContent = d.battle_servers ? 'Battle servers: ON' : 'Battle servers: OFF (the game\'s own values in matches)';
+    $('tnBattle').className = 'chip ' + (d.battle_servers ? 'good' : 'warn');
+    $('tnBattleToggle').textContent = d.battle_servers ? 'Turn off on battle servers' : 'Turn on on battle servers';
+    $('tnBattleToggle').onclick = () => {
+      const on = !d.battle_servers;
+      if (!confirm(on ? 'Battle servers apply the live balancing version from the next match on, for every player. Continue?' : 'Battle servers go back to the game\'s own values from the next match on. Continue?')) return;
+      tnCall('/battle', { on }, on ? 'Battle servers apply the live version from the next match.' : 'Battle servers use the game\'s values from the next match.');
+    };
     $('tnPending').textContent = d.pending ? `${d.pending} unpublished change${d.pending > 1 ? 's' : ''}` : 'Draft = live';
     const apply = d.test_accounts.filter((a) => a.mode === 'apply').map((a) => a.name);
     const check = d.test_accounts.filter((a) => a.mode === 'check').map((a) => a.name);

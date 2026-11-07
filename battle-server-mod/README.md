@@ -1871,3 +1871,27 @@ Legendary -- the 8 bots a side of a normal match). The extension now grows
 each side's entries of each fleet type to the team size (smoke host, team size
 20: every group 8 -> 20, 48 -> 120 entries). UNTESTED in a played match: the
 bots alive after the fill, copies sharing spawn points, host load.
+
+## Balancing from the admin dashboard (`/battle/tune`, added 2026-11-07)
+
+The host never logs in, so it never gets the tune reply. Its tune data comes
+from `YTuneManager::LoadBackupDataTablesFromAssets` (`0x3C83D0`): at map load
+each cooked table is turned into JSON with `UDataTable::GetTableAsJSON`
+(`0x18F69C0`) and that JSON is parsed into the tune slots the client's reply
+fills (verified in the decompile). The mod hooks `GetTableAsJSON`: for
+`DN_Weapons_OTS_DT`, `DN_Projectile_OTS_DT` and `DN_Officers_OTS_DT` it asks
+mmogbrain once (`GET /battle/tune`, loopback) for the live balancing version
+(the dashboard's Balancing tab) and writes each value into the JSON -- row by
+its `"Name"`, field by key -- before the game parses it. `version none`
+(nothing published, or switched off on the dashboard) keeps the game's values.
+
+Log lines: `tune: balancing version 1.0.N from mmogbrain, X change(s)`,
+`tune: patching <table> (<package>)`, `tune: <table> -- balancing version
+1.0.N: a of b value(s) applied; not found: row.field`. Two cooked tables are
+named `DN_Projectile_OTS_DT` (`Projectiles/`, the one the editor's data comes
+from, and `Abilities/`); a change is reported "not found" in the one that
+lacks its row.
+
+Smoke-tested with a stand-in `/battle/tune` (`DN_MMOG_HTTP`): values applied,
+the game parsed the patched JSON (no "Problem parsing" line), match
+InProgress. UNTESTED in a played match: damage actually changing.

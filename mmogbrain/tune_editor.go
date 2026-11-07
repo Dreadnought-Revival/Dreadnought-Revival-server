@@ -27,8 +27,8 @@ import (
 //
 // A published version goes into the tune reply ("1.0.<n>"), which reaches
 // only accounts in tune test mode "apply" (or everyone with DN_TUNE_SEND=1).
-// Battle servers keep their own tables until #16 step 2, so a change shows in
-// the client (stats panels) but does not yet change what happens in a match.
+// Battle servers apply the live version too (battle_tune.go, from the next
+// match on), unless switched off on the dashboard.
 
 var tuneEditableTables = []string{"WeaponsTune", "ProjectilesTune", "OfficersTune"}
 
@@ -222,6 +222,11 @@ func checkTuneChange(c tuneChange) string {
 	if kind == "string" && utf8.RuneCountInString(c.Value.(string)) > 200 {
 		return c.Row + "." + c.Field + ": too long"
 	}
+	// The battle servers get the values as tab-separated lines and write
+	// them into JSON text (battle_tune.go).
+	if kind == "string" && strings.ContainsAny(c.Value.(string), "\t\n\r\"\\") {
+		return c.Row + "." + c.Field + ": no tabs, line breaks, quotes or backslashes"
+	}
 	return ""
 }
 
@@ -273,6 +278,7 @@ func registerAdminTuneEditor(api *mux.Router) {
 	api.HandleFunc("/tune/publish", adminAPITunePublish).Methods(http.MethodPost)
 	api.HandleFunc("/tune/discard", adminAPITuneDiscard).Methods(http.MethodPost)
 	api.HandleFunc("/tune/restore", adminAPITuneRestore).Methods(http.MethodPost)
+	api.HandleFunc("/tune/battle", adminAPITuneBattleServers).Methods(http.MethodPost)
 }
 
 type tuneDiffRow struct {
@@ -360,7 +366,8 @@ func adminTuneJSON(database *sql.DB) (map[string]any, error) {
 		live = "1.0." + strconv.FormatInt(versionID, 10)
 	}
 	return map[string]any{"live": live, "live_id": versionID, "pending": pending, "diff": diff, "versions": versions,
-		"tables": tables, "test_accounts": accounts, "everyone": tuneSendToEveryone()}, nil
+		"tables": tables, "test_accounts": accounts, "everyone": tuneSendToEveryone(),
+		"battle_servers": tuneOnBattleServers(), "battle_server_tables": tuneHostTableNames()}, nil
 }
 
 func tuneSendToEveryone() bool { return strings.TrimSpace(getenv("DN_TUNE_SEND", "")) == "1" }

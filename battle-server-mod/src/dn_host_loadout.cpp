@@ -10549,6 +10549,265 @@ static void InstallSwitchedHook(const char *what, uintptr_t rva, void *detour,
 }
 
 // ---------------------------------------------------------------------------
+// Balancing on the battle server (2026-11-07, issue #16 step 2; mmogbrain
+// battle_tune.go).
+//
+// The host never logs in, so it never gets the tune reply. Its tune data comes
+// from YTuneManager::LoadBackupDataTablesFromAssets (0x3C83D0): at map load it
+// turns each cooked table into JSON text with UDataTable::GetTableAsJSON
+// (0x18F69C0, FString *(UDataTable *, FString *out, uint8 flags), returns out),
+// parses that and keeps it as the tune slots the client's reply fills
+// (weapons +0xD0, ...; verified in the decompile). This hook asks mmogbrain
+// (GET /battle/tune) once for the live balancing version and writes its values
+// into the weapons, projectile and officer tables' JSON before the game parses
+// it -- rows by their "Name", fields by key -- so this host runs the same
+// version as a client that got it. "version none": the game's own values.
+#define RVA_GET_TABLE_AS_JSON 0x18F69C0
+typedef void *(__fastcall *tGetTableAsJSON)(void *table, void *out, uint8_t flags);
+static tGetTableAsJSON g_origGetTableAsJSON = nullptr;
+
+struct TuneChange {
+  char table[40], row[96], field[64], value[72];
+  char kind; // n, b, s
+  bool applied;
+};
+#define TUNE_MAX_CHANGES 2048
+static TuneChange g_tune[TUNE_MAX_CHANGES];
+static int g_tuneCount = -1; // -1: not fetched yet
+static char g_tuneVersion[32];
+
+static void TuneFetchOnce() {
+  if (g_tuneCount >= 0)
+    return;
+  g_tuneCount = 0;
+  strcpy_s(g_tuneVersion, sizeof g_tuneVersion, "none");
+  static char buf[512 * 1024];
+  const char *body = nullptr;
+  int n = 0;
+  if (!HttpGetLoopbackRaw("/battle/tune", buf, (int)sizeof buf, &body, &n) || n <= 0) {
+    Logf("tune: GET /battle/tune failed; the game's own balancing values stay");
+    return;
+  }
+  // Lines: "version\t<v>" then "table\trow\tfield\tkind\tvalue".
+  const char *p = body, *end = body + n;
+  while (p < end) {
+    const char *eol = (const char *)memchr(p, '\n', (size_t)(end - p));
+    if (!eol)
+      eol = end;
+    char line[512];
+    size_t ll = (size_t)(eol - p) < sizeof line - 1 ? (size_t)(eol - p) : sizeof line - 1;
+    memcpy(line, p, ll);
+    line[ll] = 0;
+    p = eol + 1;
+    char *f[5] = {};
+    int nf = 0;
+    for (char *c = line; nf < 5;) {
+      f[nf++] = c;
+      char *t = strchr(c, '\t');
+      if (!t)
+        break;
+      *t = 0;
+      c = t + 1;
+    }
+    if (nf == 2 && strcmp(f[0], "version") == 0) {
+      strncpy_s(g_tuneVersion, sizeof g_tuneVersion, f[1], _TRUNCATE);
+      continue;
+    }
+    if (nf != 5 || g_tuneCount >= TUNE_MAX_CHANGES || strlen(f[0]) >= 40 || strlen(f[1]) >= 96 ||
+        strlen(f[2]) >= 64 || strlen(f[4]) >= 72 || (f[3][0] != 'n' && f[3][0] != 'b' && f[3][0] != 's'))
+      continue;
+    TuneChange &c = g_tune[g_tuneCount++];
+    strcpy_s(c.table, sizeof c.table, f[0]);
+    strcpy_s(c.row, sizeof c.row, f[1]);
+    strcpy_s(c.field, sizeof c.field, f[2]);
+    strcpy_s(c.value, sizeof c.value, f[4]);
+    c.kind = f[3][0];
+    c.applied = false;
+  }
+  Logf("tune: balancing version %s from mmogbrain, %d change(s)", g_tuneVersion, g_tuneCount);
+}
+
+static bool JsonWs(wchar_t c) { return c == L' ' || c == L'\t' || c == L'\r' || c == L'\n'; }
+
+// Equal to the ASCII text a?
+static bool WideIs(const wchar_t *w, const char *a) {
+  for (; *a; ++a, ++w)
+    if (*w != (wchar_t)(unsigned char)*a)
+      return false;
+  return true;
+}
+
+// The JSON row object whose "Name" is row: [*start, *end] (braces included).
+static bool TuneFindRow(const wchar_t *s, int len, const char *row, int *start, int *end) {
+  size_t rl = strlen(row);
+  for (const wchar_t *k = wcsstr(s, L"\"Name\""); k; k = wcsstr(k + 6, L"\"Name\"")) {
+    const wchar_t *q = k + 6;
+    while (q < s + len && JsonWs(*q))
+      ++q;
+    if (q >= s + len || *q != L':')
+      continue;
+    ++q;
+    while (q < s + len && JsonWs(*q))
+      ++q;
+    if (q >= s + len || *q != L'"' || q + 1 + rl >= s + len || !WideIs(q + 1, row) || q[1 + rl] != L'"')
+      continue;
+    const wchar_t *b = k;
+    while (b > s && *b != L'{')
+      --b;
+    if (*b != L'{')
+      return false;
+    int depth = 0;
+    bool str = false;
+    for (const wchar_t *e = b; e < s + len; ++e) {
+      if (str) {
+        if (*e == L'\\')
+          ++e;
+        else if (*e == L'"')
+          str = false;
+        continue;
+      }
+      if (*e == L'"')
+        str = true;
+      else if (*e == L'{' || *e == L'[')
+        ++depth;
+      else if ((*e == L'}' || *e == L']') && --depth == 0) {
+        *start = (int)(b - s);
+        *end = (int)(e - s);
+        return true;
+      }
+    }
+    return false;
+  }
+  return false;
+}
+
+// The value of key field inside [rs, re]: [*vs, *ve).
+static bool TuneFindValue(const wchar_t *s, int rs, int re, const char *field, int *vs, int *ve) {
+  size_t fl = strlen(field);
+  for (int i = rs; i + (int)fl + 2 <= re; ++i) {
+    if (s[i] != L'"' || !WideIs(s + i + 1, field) || s[i + 1 + fl] != L'"')
+      continue;
+    int j = i + 2 + (int)fl;
+    while (j < re && JsonWs(s[j]))
+      ++j;
+    if (j >= re || s[j] != L':')
+      continue; // a value, not a key
+    ++j;
+    while (j < re && JsonWs(s[j]))
+      ++j;
+    int k = j;
+    if (s[k] == L'"') {
+      for (++k; k < re && s[k] != L'"'; ++k)
+        if (s[k] == L'\\')
+          ++k;
+      ++k;
+    } else {
+      while (k < re && s[k] != L',' && s[k] != L'}' && s[k] != L']' && !JsonWs(s[k]))
+        ++k;
+    }
+    if (k <= j)
+      return false;
+    *vs = j;
+    *ve = k;
+    return true;
+  }
+  return false;
+}
+
+typedef void(__fastcall *tFMemFreeTune)(void *p);
+#define RVA_FMEMORY_FREE_TUNE 0xBFC9C0 // FMemory::Free, the same as RVA_FMEMORY_FREE
+
+// Writes this table's changes into its JSON (an FString: data, num, max).
+static void TunePatchTable(const char *table, uint8_t *fstr) {
+  wchar_t *data = *(wchar_t **)fstr;
+  int num = *(int32_t *)(fstr + 8);
+  if (!data || num <= 1)
+    return;
+  int len = num - 1, total = 0, applied = 0;
+  wchar_t *work = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)(len + 1));
+  if (!work)
+    return;
+  memcpy(work, data, sizeof(wchar_t) * (size_t)len);
+  work[len] = 0;
+  char missing[512];
+  int ml = 0;
+  missing[0] = 0;
+  for (int i = 0; i < g_tuneCount; ++i) {
+    TuneChange &c = g_tune[i];
+    if (strcmp(c.table, table) != 0)
+      continue;
+    ++total;
+    int rs, re, vs, ve;
+    if (!TuneFindRow(work, len, c.row, &rs, &re) || !TuneFindValue(work, rs, re, c.field, &vs, &ve)) {
+      if (ml < (int)sizeof missing - 100)
+        ml += _snprintf_s(missing + ml, sizeof missing - ml, _TRUNCATE, " %s.%s", c.row, c.field);
+      continue;
+    }
+    wchar_t rep[80];
+    int rlen = 0;
+    if (c.kind == 's')
+      rep[rlen++] = L'"';
+    for (const char *a = c.value; *a && rlen < 76; ++a)
+      rep[rlen++] = (wchar_t)(unsigned char)*a;
+    if (c.kind == 's')
+      rep[rlen++] = L'"';
+    int nlen = len - (ve - vs) + rlen;
+    wchar_t *next = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)(nlen + 1));
+    if (!next)
+      continue;
+    memcpy(next, work, sizeof(wchar_t) * (size_t)vs);
+    memcpy(next + vs, rep, sizeof(wchar_t) * (size_t)rlen);
+    memcpy(next + vs + rlen, work + ve, sizeof(wchar_t) * (size_t)(len - ve));
+    next[nlen] = 0;
+    free(work);
+    work = next;
+    len = nlen;
+    c.applied = true;
+    ++applied;
+  }
+  if (applied) {
+    wchar_t *nb = (wchar_t *)((tFMemoryMalloc)(g_base + RVA_FMEMORY_MALLOC))(sizeof(wchar_t) * (size_t)(len + 1), 0);
+    if (nb) {
+      memcpy(nb, work, sizeof(wchar_t) * (size_t)(len + 1));
+      *(wchar_t **)fstr = nb;
+      *(int32_t *)(fstr + 8) = len + 1;
+      *(int32_t *)(fstr + 12) = len + 1;
+      ((tFMemFreeTune)(g_base + RVA_FMEMORY_FREE_TUNE))(data);
+    } else {
+      applied = 0;
+    }
+  }
+  free(work);
+  if (total)
+    Logf("tune: %s -- balancing version %s: %d of %d value(s) applied%s%s", table, g_tuneVersion, applied, total,
+         ml ? "; not found:" : "", missing);
+}
+
+static void *__fastcall HookGetTableAsJSON(void *table, void *out, uint8_t flags) {
+  void *ret = g_origGetTableAsJSON(table, out, flags);
+  __try {
+    if (!table || !out || !IsReadable(table, sizeof(UObjectMin)))
+      return ret;
+    const char *name = NameText(((UObjectMin *)table)->Name);
+    if (!name || (strcmp(name, "DN_Weapons_OTS_DT") != 0 && strcmp(name, "DN_Projectile_OTS_DT") != 0 &&
+                  strcmp(name, "DN_Officers_OTS_DT") != 0))
+      return ret;
+    TuneFetchOnce();
+    if (g_tuneCount > 0) {
+      // Two cooked tables are called DN_Projectile_OTS_DT (Projectiles/ and
+      // Abilities/); the log names the package so a "not found" is readable.
+      UObjectMin *outer = ((UObjectMin *)table)->Outer;
+      const char *pkg = outer && IsReadable(outer, sizeof(UObjectMin)) ? NameText(outer->Name) : nullptr;
+      Logf("tune: patching %s (%s)", name, pkg ? pkg : "?");
+      TunePatchTable(name, (uint8_t *)out);
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("tune: EXCEPTION 0x%08X patching a table's JSON; it keeps the game's values", GetExceptionCode());
+  }
+  return ret;
+}
+
+// ---------------------------------------------------------------------------
 // Ceres Awakens: a tech cache's buff ends with its collector (on, PodTDM hosts
 // only; dn_host_no_ceres_buff_end.txt / DN_HOST_NO_CERES_BUFF_END=1 turns it
 // off). Added 2026-10-29.
@@ -10829,6 +11088,8 @@ static DWORD WINAPI Startup(LPVOID) {
 
   InstallSwitchedHook("command ship gun rows (LoadWeaponDataTableRow)", RVA_WEAPON_GROUP_LOAD_ROW,
                       (void *)&HookWeaponGroupLoadRow, (void **)&g_origWeaponGroupLoadRow);
+  InstallSwitchedHook("balancing (GetTableAsJSON, /battle/tune)", RVA_GET_TABLE_AS_JSON,
+                      (void *)&HookGetTableAsJSON, (void **)&g_origGetTableAsJSON);
   if (!SwitchOn("DN_HOST_NO_ONS_ABILITY_SLOTS", "dn_host_no_ons_ability_slots.txt"))
     InstallSwitchedHook("onslaught ability slots (NPC controller values)", RVA_NPC_APPLY_CONTROL_VALUES,
                         (void *)&HookNpcApplyControlValues, (void **)&g_origNpcApplyControlValues);
