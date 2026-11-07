@@ -83,6 +83,7 @@ func registerAdminDashboard(r *mux.Router, adminKey, controlPlaneURL, internalKe
 	registerAdminEconomySettings(api)
 	registerAdminFairPlay(api)
 	registerAdminModeSettings(api)
+	registerAdminServerMessages(api)
 }
 
 func writeAdminJSON(w http.ResponseWriter, v any) {

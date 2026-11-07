@@ -89,11 +89,19 @@ func serverChatProfile() map[string]any {
 	})
 }
 
-// announce posts one Server line to everyone in the Global channel.
+// announce posts one automatic Server line (online count, open queues) to
+// everyone in the Global channel, unless DN_SERVER_CHAT=0.
 func (h *socialHub) announce(text string) {
 	if !serverChatEnabled() {
 		return
 	}
+	h.serverLine(text)
+}
+
+// serverLine posts one Server line to everyone in the Global channel and
+// returns how many it went to. The admin dashboard's messages use it
+// directly: DN_SERVER_CHAT turns off only the automatic lines.
+func (h *socialHub) serverLine(text string) int {
 	channel := defaultChatChannels[0]
 	profile := serverChatProfile()
 	msg := chatMessageNotice("chat.channel.message", channel, serverChatEntry(), text)
@@ -104,6 +112,16 @@ func (h *socialHub) announce(text string) {
 		sent++
 	}
 	logrus.WithField("recipients", sent).Info("server chat: " + text)
+	return sent
+}
+
+// serverLineTo posts one Server line to one player only (the message of
+// the day).
+func serverLineTo(peer *socialPeer, text string) error {
+	if err := peer.send(serverChatProfile()); err != nil {
+		return err
+	}
+	return peer.send(chatMessageNotice("chat.channel.message", defaultChatChannels[0], serverChatEntry(), text))
 }
 
 // --- online count ----------------------------------------------------------------

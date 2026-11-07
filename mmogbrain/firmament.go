@@ -401,6 +401,7 @@ func handleFirmamentConn(log *logrus.Logger, conn net.Conn, secret []byte) {
 		// and the player's friends learn they are online.
 		socialHubInstance.pushFriendListing(playerID)
 		socialHubInstance.broadcastFriendState(playerID, true)
+		sendMessageOfTheDay(peer) // admin dashboard (server_messages.go)
 	}
 
 	for {

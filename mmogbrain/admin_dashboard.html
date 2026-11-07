@@ -52,6 +52,7 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
 input, select { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; }
 input[type=search] { min-width: 220px; }
+textarea { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; width: 100%; min-height: 64px; resize: vertical; }
 pre.log { margin: 0; padding: 10px 12px; font: 12px/1.4 var(--mono); white-space: pre-wrap; word-break: break-all; max-height: 70vh; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
 .results { font-size: 12px; color: var(--muted); white-space: normal; }
 #login { max-width: 380px; margin: 12vh auto; }
@@ -103,6 +104,7 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     <button data-tab="fairplay">Fair play</button>
     <button data-tab="economy">Economy</button>
     <button data-tab="modes">Game modes</button>
+    <button data-tab="messages">Messages</button>
     <button data-tab="matches">Matches</button>
     <button data-tab="reports">Bug reports</button>
     <button data-tab="telemetry">Telemetry</button>
@@ -205,6 +207,24 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
       </div>
       <div class="row"><button class="btn" id="gmSave">Save changes</button><span class="muted">Applies at once to matchmaking. A tile shows or hides at each player's next login.</span></div>
       <p id="gmMsg"></p>
+    </section>
+  </div>
+
+  <div id="tab-messages" class="hidden">
+    <div class="row"><span class="muted">Messages appear in everyone's Global chat from "Server", like the online-count lines. A chat line cannot be edited or deleted once sent.</span></div>
+    <section class="manage" style="margin-top:0"><h2>Send to everyone online now</h2>
+      <textarea id="msgText" maxlength="300" placeholder="e.g. The server restarts in 10 minutes for an update."></textarea>
+      <div class="row" style="margin-top:8px"><button class="btn" id="msgSend">Send</button><span class="muted" id="msgCount"></span></div>
+      <p id="msgMsg"></p>
+    </section>
+    <section class="manage"><h2>Message of the day</h2>
+      <div class="muted" style="margin-bottom:8px">Sent to each player a few seconds after they come online. Empty = none.</div>
+      <textarea id="motdText" maxlength="300" placeholder="e.g. Welcome back, Captain! Halloween sale: 50% off until 24 November."></textarea>
+      <div class="row" style="margin-top:8px"><button class="btn" id="motdSave">Save</button><button class="btn" id="motdOff">Turn off</button><span class="muted" id="motdNow"></span></div>
+      <p id="motdMsg"></p>
+    </section>
+    <section><h2>Sent lately</h2>
+      <div class="table-wrap"><table><thead><tr><th>When (UTC)</th><th>What</th><th>Text</th><th class="num">Players</th><th>From</th></tr></thead><tbody id="msgRows"></tbody></table></div>
     </section>
   </div>
 
@@ -817,6 +837,41 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     gmSave(body, 'Saved.');
   };
 
+  // --- messages -----------------------------------------------------------
+  let motdShown = false;
+  async function loadMessages() {
+    const d = await api('/messages');
+    $('msgCount').textContent = `${fmt(d.online)} online now`;
+    $('motdNow').textContent = d.motd ? 'A message of the day is set.' : 'No message of the day.';
+    if (!motdShown) { $('motdText').value = d.motd; motdShown = true; }
+    fill('msgRows', d.recent.map((x) => {
+      let det = {}; try { det = JSON.parse(x.details); } catch (e) {}
+      const what = x.action === 'server message' ? 'Sent' : (det.text ? 'Message of the day set' : 'Message of the day off');
+      return el('tr', {}, el('td', {}, x.at), el('td', {}, what), el('td', { class: 'results' }, det.text || ''),
+        el('td', { class: 'num' }, x.action === 'server message' ? fmt(det.recipients) : ''), el('td', { class: 'muted' }, x.actor));
+    }), 'Nothing sent yet.', 5);
+  }
+  async function msgPost(path, body, msgId, ok) {
+    const msg = $(msgId);
+    try { const r = await postJSON(path, body); msg.className = 'ok'; msg.textContent = ok(r); loadMessages(); return true; }
+    catch (e) { if (e.message !== 'forbidden') { msg.className = 'err'; msg.textContent = String(e.message || e); } return false; }
+  }
+  $('msgSend').onclick = async () => {
+    const text = $('msgText').value.trim();
+    if (!text) { $('msgMsg').className = 'err'; $('msgMsg').textContent = 'Write the message first.'; return; }
+    if (!confirm(`Send to everyone online now?\n\n${text}`)) return;
+    if (await msgPost('/messages/send', { text }, 'msgMsg', (r) => `Sent to ${fmt(r.recipients)} player${r.recipients === 1 ? '' : 's'}.`)) $('msgText').value = '';
+  };
+  $('motdSave').onclick = () => {
+    const text = $('motdText').value.trim();
+    if (!text) { $('motdOff').click(); return; }
+    msgPost('/messages/motd', { text }, 'motdMsg', () => 'Saved. Players get it the next time they come online.');
+  };
+  $('motdOff').onclick = () => {
+    if (!confirm('Turn the message of the day off?')) return;
+    msgPost('/messages/motd', { text: '' }, 'motdMsg', () => 'Turned off.').then((ok) => { if (ok) $('motdText').value = ''; });
+  };
+
   // --- economy ------------------------------------------------------------
   let economyShown = false;
   function renderEconomy(d) {
@@ -892,7 +947,7 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
   }
 
   const loaders = {
-    overview: loadOverview, metrics: loadMetrics, moderation: loadModeration, fairplay: loadFairPlay, economy: loadEconomy, modes: loadModes, instances: loadInstances, players: () => Promise.all([loadOnline(), loadPlayers()]),
+    overview: loadOverview, metrics: loadMetrics, moderation: loadModeration, fairplay: loadFairPlay, economy: loadEconomy, modes: loadModes, messages: loadMessages, instances: loadInstances, players: () => Promise.all([loadOnline(), loadPlayers()]),
     matches: loadMatches, reports: loadReports, telemetry: loadTelemetry, logs: loadLog,
   };
   async function refresh() {
