@@ -62,6 +62,9 @@ import (
 //     Its reply handler (dispatcher 0x2A2F254) reads only "Contracts"
 //     (0x2A79B20) -- no currency -- so the credits reach the hangar through
 //     the YA_RewardCurrencies push, whose handler assigns the balance.
+//   - NOT original: a claim also pays GP (contract_gp_reward, 200 by
+//     default, set on the admin dashboard; operator 2026-11-07). The card
+//     cannot show it; the push above carries the new GP balance too.
 //   - What counts is each quest's own filters (mpquest_rules_gen.go).
 //
 // So a slot is refilled once per day: an empty slot (never filled, or its
@@ -428,47 +431,52 @@ func replaceDailyContract(pid string, entryID int64, now time.Time) (bool, strin
 
 // removeDailyContract is the player claiming a completed contract (or
 // dropping one): the slot stays empty until the next reset. A claimed
-// contract pays its credits here, once (paid). Returns whether the entry
-// was found and the credits paid.
-func removeDailyContract(pid string, entryID int64) (bool, int32) {
+// contract pays its credits and the contract GP reward (economy_settings.go)
+// here, once (paid). Returns whether the entry was found and what was paid.
+func removeDailyContract(pid string, entryID int64) (ok bool, credits, gp int32) {
 	database := currentMmogPlayerStateDB()
 	pid = normalizedPlayerStatePID(pid)
 	if database == nil {
-		return false, 0
+		return false, 0, 0
 	}
+	// Read before the transaction: it holds the database's one connection.
+	gpReward := contractGPReward()
 	contractsMu.Lock()
 	defer contractsMu.Unlock()
 	var state string
 	var reward, paid int32
 	if err := database.QueryRow(`SELECT state, reward, paid FROM player_daily_contracts WHERE entry_id=? AND user_id=? AND state IN ('active','completed')`,
 		entryID, pid).Scan(&state, &reward, &paid); err != nil {
-		return false, 0
+		return false, 0, 0
 	}
 	tx, err := database.Begin()
 	if err != nil {
-		return false, 0
+		return false, 0, 0
 	}
 	defer func() { _ = tx.Rollback() }()
 	res, err := tx.Exec(`UPDATE player_daily_contracts SET state=CASE state WHEN 'completed' THEN 'acknowledged' ELSE 'removed' END, paid=paid OR state='completed'
 		WHERE entry_id=? AND user_id=? AND state=?`, entryID, pid, state)
 	if err != nil {
-		return false, 0
+		return false, 0, 0
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return false, 0
+		return false, 0, 0
 	}
-	credits := int32(0)
-	if state == "completed" && paid == 0 && reward > 0 {
-		if _, err := tx.Exec(`UPDATE player_state SET soft_currency=soft_currency+?, updated_at=datetime('now') WHERE user_id=?`, reward, pid); err != nil {
-			return false, 0
+	if state == "completed" && paid == 0 {
+		credits, gp = max(reward, 0), gpReward
+		if _, err := tx.Exec(`UPDATE player_state SET soft_currency=soft_currency+?, premium_currency=premium_currency+?, updated_at=datetime('now') WHERE user_id=?`,
+			credits, gp, pid); err != nil {
+			return false, 0, 0
 		}
-		credits = reward
+		if _, err := tx.Exec(`UPDATE player_daily_contracts SET gp_paid=? WHERE entry_id=?`, gp, entryID); err != nil {
+			return false, 0, 0
+		}
 	}
 	if err := tx.Commit(); err != nil {
-		return false, 0
+		return false, 0, 0
 	}
 	bumpContractState(database, pid, 0, 0)
-	return true, credits
+	return true, credits, gp
 }
 
 // resetDailyContracts is the admin dashboard's reset: the player's current
@@ -617,13 +625,14 @@ func buildMmogContractReplacePayload(pid string, payload []byte) []byte {
 
 // buildMmogContractRemovePayload answers YA_ContractRemove (the claim):
 // the entry list as root "Contracts". The reply carries no currency (see
-// the rules above), so a paid claim also pushes the new balance.
+// the rules above), so a paid claim also pushes the new balance (credits and
+// GP).
 func buildMmogContractRemovePayload(pid string, payload []byte) []byte {
 	entryID := contractEntryID(payload)
-	ok, credits := removeDailyContract(pid, entryID)
+	ok, credits, gp := removeDailyContract(pid, entryID)
 	logrus.WithFields(logrus.Fields{"player": normalizedPlayerStatePID(pid), "entry": entryID, "ok": ok,
-		"credits": credits}).Info("contracts: claim")
-	if credits > 0 {
+		"credits": credits, "gp": gp}).Info("contracts: claim")
+	if credits > 0 || gp > 0 {
 		squadHubInstance.push(pid, buildMmogRewardCurrenciesPayload(pid))
 	}
 	var b []byte

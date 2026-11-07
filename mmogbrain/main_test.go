@@ -868,7 +868,7 @@ func TestMmogPlayerStatePersistsCurrencyPerPlayer(t *testing.T) {
 	if !bytes.Contains(playerBGet, protocol.AppendStringField(nil, "Credits", "10000")) {
 		t.Fatal("second player should keep default soft currency")
 	}
-	if !bytes.Contains(playerBGet, protocol.AppendStringField(nil, "Points", "0")) {
+	if !bytes.Contains(playerBGet, protocol.AppendStringField(nil, "Points", "10000")) {
 		t.Fatal("second player should keep default premium currency")
 	}
 }

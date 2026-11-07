@@ -99,13 +99,18 @@ func currentMmogPlayerStateDB() *sql.DB {
 	return mmogPlayerStateDB
 }
 
+// newPlayerPremiumCurrency is the GP a new account starts with (operator
+// 2026-11-07; was 0). Existing accounts keep their balance. The legacy
+// progression handler (handlers.go) seeds the same.
+const newPlayerPremiumCurrency = 10000
+
 func defaultMmogPlayerState(playerPID string) mmogPlayerState {
 	return mmogPlayerState{
 		playerPID:       normalizedPlayerStatePID(playerPID),
 		displayName:     "Local",
 		displayInfo:     defaultCaptainDisplayInfo,
 		softCurrency:    10000,
-		premiumCurrency: 0,
+		premiumCurrency: newPlayerPremiumCurrency,
 		freeXP:          0,
 		// A brand-new player starts at rank 1 with 100 XP (verified against
 		// the real game). rankXP tracks progress toward the next rank
@@ -227,7 +232,7 @@ func seedMmogPlayerState(database *sql.DB, playerPID string) error {
 	// real game) — was previously seeded at 0/0, and inconsistent with
 	// defaultMmogPlayerState's fallback values besides.
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO player_state(user_id,soft_currency,premium_currency,free_xp,current_xp,current_rank,rank_xp) VALUES(?,?,?,?,?,?,?)`,
-		pid, 10000, 0, 0, 100, 1, 100); err != nil {
+		pid, 10000, newPlayerPremiumCurrency, 0, 100, 1, 100); err != nil {
 		return fmt.Errorf("seed player_state: %w", err)
 	}
 

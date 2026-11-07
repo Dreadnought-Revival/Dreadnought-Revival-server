@@ -315,7 +315,8 @@ func (h *Handler) UpdateProgression(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pid := normalizeForDB(req.UserID)
-	if _, err := h.DB.Exec(`INSERT OR IGNORE INTO player_state(user_id,soft_currency,premium_currency,free_xp,current_xp,current_rank,rank_xp) VALUES(?,10000,0,0,0,1,5000)`, pid); err != nil {
+	// 10000 GP, as mmogbrain's newPlayerPremiumCurrency.
+	if _, err := h.DB.Exec(`INSERT OR IGNORE INTO player_state(user_id,soft_currency,premium_currency,free_xp,current_xp,current_rank,rank_xp) VALUES(?,10000,10000,0,0,1,5000)`, pid); err != nil {
 		h.Log.WithError(err).WithField("pid", pid).Warn("progression: seed player state")
 		writeError(w, http.StatusInternalServerError, "seed failed")
 		return

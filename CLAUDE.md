@@ -99,6 +99,9 @@ numbers like #67 in older commits and docs are the [old repository's](https://gi
   page was verified live 2026-11-03. The base amounts are still GUESS values
   (`DN_REWARD_*`): [#1](https://github.com/Dreadnought-Revival/Dreadnought-Revival-server/issues/1).
 - **Daily contracts**: implemented 2026-10-09; claiming verified live 2026-11-03.
+  Since 2026-11-07 a claim also pays GP (not original; operator): 200 by
+  default, changed on the admin dashboard's Economy tab. New accounts start
+  with 10000 GP (was 0). Unverified live.
 - **Statistics screen** overflow: FIXED 2026-10-09 (the reply needs root pids
   and one root stats entry per pid); filled with real counters since 2026-10-15.
 - **"No selectable ships"** after joining: players joined before the host's game

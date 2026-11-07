@@ -100,6 +100,7 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     <button data-tab="instances">Battle servers</button>
     <button data-tab="players">Players</button>
     <button data-tab="moderation">Moderation</button>
+    <button data-tab="economy">Economy</button>
     <button data-tab="matches">Matches</button>
     <button data-tab="reports">Bug reports</button>
     <button data-tab="telemetry">Telemetry</button>
@@ -145,6 +146,18 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     </section>
     <section><h2>Admin actions</h2>
       <div class="table-wrap"><table><thead><tr><th>When (UTC)</th><th>Action</th><th>Target</th><th>Details</th><th>From</th></tr></thead><tbody id="auditRows"></tbody></table></div>
+    </section>
+  </div>
+
+  <div id="tab-economy" class="hidden">
+    <section style="margin-top:0"><h2>Daily contracts</h2>
+      <div class="fields">
+        <label>GP per claimed contract<input id="eContractGP" type="number" min="0" step="1"></label>
+      </div>
+      <div class="row"><button class="btn" id="eSave">Save</button>
+        <span class="muted" id="eInfo"></span></div>
+      <div class="muted">Paid on top of the contract's credits when a player claims a finished contract, from the next claim on. 0 turns it off. The contract card in the game only shows the credits; the GP shows up in the player's balance.</div>
+      <p id="eMsg"></p>
     </section>
   </div>
 
@@ -606,6 +619,27 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
       el('td', { class: 'results' }, auditText(x.details)), el('td', { class: 'muted' }, x.actor))), 'No admin actions yet.', 5);
   }
 
+  // --- economy ------------------------------------------------------------
+  let economyShown = false;
+  function renderEconomy(d) {
+    $('eContractGP').max = d.contract_gp_reward_max;
+    $('eInfo').textContent = `Now ${fmt(d.contract_gp_reward)} GP (default ${fmt(d.contract_gp_reward_default)}).`;
+  }
+  async function loadEconomy() {
+    const d = await api('/settings');
+    renderEconomy(d);
+    if (!economyShown) { $('eContractGP').value = d.contract_gp_reward; economyShown = true; }
+  }
+  $('eSave').onclick = async () => {
+    const msg = $('eMsg'); const v = $('eContractGP').value.trim();
+    if (v === '' || !Number.isInteger(Number(v))) { msg.className = 'err'; msg.textContent = 'Enter a whole number.'; return; }
+    if (!confirm(`Pay ${fmt(Number(v))} GP per claimed daily contract?`)) return;
+    try {
+      const d = await postJSON('/settings', { contract_gp_reward: Number(v) });
+      renderEconomy(d); $('eContractGP').value = d.contract_gp_reward; msg.className = 'ok'; msg.textContent = 'Saved.';
+    } catch (e) { if (e.message !== 'forbidden') { msg.className = 'err'; msg.textContent = String(e.message || e); } }
+  };
+
   async function loadMatches() {
     const d = await api('/matches');
     fill('matchRows', d.matches.map((m) => {
@@ -660,7 +694,7 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
   }
 
   const loaders = {
-    overview: loadOverview, metrics: loadMetrics, moderation: loadModeration, instances: loadInstances, players: () => Promise.all([loadOnline(), loadPlayers()]),
+    overview: loadOverview, metrics: loadMetrics, moderation: loadModeration, economy: loadEconomy, instances: loadInstances, players: () => Promise.all([loadOnline(), loadPlayers()]),
     matches: loadMatches, reports: loadReports, telemetry: loadTelemetry, logs: loadLog,
   };
   async function refresh() {

@@ -497,6 +497,9 @@ var migrations = []string{
 	// pay again when claimed.
 	`ALTER TABLE player_daily_contracts ADD COLUMN paid INTEGER NOT NULL DEFAULT 0`,
 	`UPDATE player_daily_contracts SET paid=1 WHERE completed_at>0`,
+	// The GP a claim paid on top of the credits (contract_gp_reward,
+	// economy_settings.go, 2026-11-07); 0 for every claim before it.
+	`ALTER TABLE player_daily_contracts ADD COLUMN gp_paid INTEGER NOT NULL DEFAULT 0`,
 }
 
 func Open(path string) (*sql.DB, error) {

@@ -21,6 +21,7 @@ func contractTestDB(t *testing.T) *sql.DB {
 	}
 	contractDetail.on.Store(false)
 	t.Cleanup(func() { contractDetail.on.Store(false) })
+	useDefaultEconomySettings(t)
 	return database
 }
 
@@ -100,6 +101,8 @@ func TestContractProgressAndPayout(t *testing.T) {
 	setContracts(t, database, now, "YMPQ_CompleteMatches", "YMPQ_WinMatchesTER", "YMPQ_Kills", "YMPQ_WinMatches")
 	before := mmogPlayerStateForPID(contractTestPID).softCurrency
 	balance := func() int32 { return mmogPlayerStateForPID(contractTestPID).softCurrency - before }
+	gpBefore := mmogPlayerStateForPID(contractTestPID).premiumCurrency
+	gpBalance := func() int32 { return mmogPlayerStateForPID(contractTestPID).premiumCurrency - gpBefore }
 
 	tdmLoss := contractMatch{mode: "TDM", outcome: "loss", kills: 4}
 	if !applyContractProgress(contractTestPID, tdmLoss, now) {
@@ -124,20 +127,25 @@ func TestContractProgressAndPayout(t *testing.T) {
 			t.Errorf("slot %d not completed: %+v", slot, c)
 		}
 	}
-	if got := balance(); got != 0 {
-		t.Fatalf("completing contracts paid %d; they pay on the claim", got)
+	if got := balance(); got != 0 || gpBalance() != 0 {
+		t.Fatalf("completing contracts paid %d credits, %d GP; they pay on the claim", got, gpBalance())
 	}
 
-	// The claim pays, once.
+	// The claim pays its credits and the GP reward, once.
 	done := contractBySlot(t, 0)
-	if ok, credits := removeDailyContract(contractTestPID, done.entryID); !ok || credits != 5000 {
-		t.Fatalf("claim: ok %v credits %d, want 5000", ok, credits)
+	if ok, credits, gp := removeDailyContract(contractTestPID, done.entryID); !ok || credits != 5000 || gp != defaultContractGPReward {
+		t.Fatalf("claim: ok %v credits %d GP %d, want 5000 and %d", ok, credits, gp, defaultContractGPReward)
 	}
-	if ok, credits := removeDailyContract(contractTestPID, done.entryID); ok || credits != 0 {
-		t.Errorf("second claim of the same contract: ok %v credits %d", ok, credits)
+	if ok, credits, gp := removeDailyContract(contractTestPID, done.entryID); ok || credits != 0 || gp != 0 {
+		t.Errorf("second claim of the same contract: ok %v credits %d GP %d", ok, credits, gp)
 	}
-	if got := balance(); got != 5000 {
-		t.Errorf("balance grew by %d after one claim, want 5000", got)
+	if got := balance(); got != 5000 || gpBalance() != defaultContractGPReward {
+		t.Errorf("balance grew by %d credits, %d GP after one claim, want 5000 and %d", got, gpBalance(), defaultContractGPReward)
+	}
+	var gpPaid int32
+	_ = database.QueryRow(`SELECT gp_paid FROM player_daily_contracts WHERE entry_id=?`, done.entryID).Scan(&gpPaid)
+	if gpPaid != defaultContractGPReward {
+		t.Errorf("gp_paid %d, want %d", gpPaid, defaultContractGPReward)
 	}
 
 	// A contract completed before 2026-11-01 was paid with its match: the
@@ -146,8 +154,8 @@ func TestContractProgressAndPayout(t *testing.T) {
 	if _, err := database.Exec(`UPDATE player_daily_contracts SET paid=1 WHERE entry_id=?`, paidBefore.entryID); err != nil {
 		t.Fatal(err)
 	}
-	if ok, credits := removeDailyContract(contractTestPID, paidBefore.entryID); !ok || credits != 0 {
-		t.Errorf("claiming an already paid contract: ok %v credits %d, want true/0", ok, credits)
+	if ok, credits, gp := removeDailyContract(contractTestPID, paidBefore.entryID); !ok || credits != 0 || gp != 0 {
+		t.Errorf("claiming an already paid contract: ok %v credits %d GP %d, want true/0/0", ok, credits, gp)
 	}
 
 	// Dropping an unfinished contract pays nothing.
@@ -155,11 +163,11 @@ func TestContractProgressAndPayout(t *testing.T) {
 		contractBySlot(t, 2).entryID); err != nil {
 		t.Fatal(err)
 	}
-	if ok, credits := removeDailyContract(contractTestPID, contractBySlot(t, 2).entryID); !ok || credits != 0 {
-		t.Errorf("dropping an active contract: ok %v credits %d", ok, credits)
+	if ok, credits, gp := removeDailyContract(contractTestPID, contractBySlot(t, 2).entryID); !ok || credits != 0 || gp != 0 {
+		t.Errorf("dropping an active contract: ok %v credits %d GP %d", ok, credits, gp)
 	}
-	if got := balance(); got != 5000 {
-		t.Errorf("balance %d after the unpaid claims, want 5000", got)
+	if got := balance(); got != 5000 || gpBalance() != defaultContractGPReward {
+		t.Errorf("balance %d credits, %d GP after the unpaid claims, want 5000 and %d", got, gpBalance(), defaultContractGPReward)
 	}
 
 	// With Elite Status the elite slot counts.
@@ -202,7 +210,7 @@ func TestContractRerollAcknowledgeAndReset(t *testing.T) {
 	if done.state != "completed" {
 		t.Fatalf("slot 0 not completed: %+v", done)
 	}
-	if ok, credits := removeDailyContract(contractTestPID, done.entryID); !ok || credits != done.reward {
+	if ok, credits, _ := removeDailyContract(contractTestPID, done.entryID); !ok || credits != done.reward {
 		t.Fatalf("acknowledge: ok %v credits %d", ok, credits)
 	}
 	if n := len(currentContracts(contractTestPID, day1.Add(time.Hour)).entries); n != contractSlots()-1 {

@@ -410,7 +410,9 @@ var targetSizes = map[string]int{
 	// presence alone put the player in a custom room (0x2A70DA0 sets the
 	// in-room flag mmog +0x3B08), which hid the rewards page of the first
 	// match after every login.
-	"YA_PlayerGet": 26209,
+	// 26209 -> 26213 (+4): a new player starts with 10000 GP (operator
+	// 2026-11-07), so Points is "10000" instead of "0".
+	"YA_PlayerGet": 26213,
 	// +56 on 2026-08-04: each of the four fleet loadout entries gained m_shipId
 	// (14 bytes x 4). Without it the hangar loaded the LIGHT bay for every owned
 	// ship -- all four starters are Mediums -- while tech tree ships, which

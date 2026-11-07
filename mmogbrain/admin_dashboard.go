@@ -80,6 +80,7 @@ func registerAdminDashboard(r *mux.Router, adminKey, controlPlaneURL, internalKe
 	api.HandleFunc("/metrics", adminAPIMetrics).Methods(http.MethodGet)
 	registerAdminPlayerManagement(api)
 	registerAdminModeration(api)
+	registerAdminEconomySettings(api)
 }
 
 func writeAdminJSON(w http.ResponseWriter, v any) {
