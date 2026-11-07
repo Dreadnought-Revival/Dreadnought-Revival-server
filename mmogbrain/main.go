@@ -96,7 +96,8 @@ func main() {
 	mm := matchmaker.New(database, log, gameMgrURL, internalKey, playersPerMatch)
 	activeMatchmaker = mm
 	configureMatchAutoscale(mm, log)
-	startServerChatOnlineCount() // server_chat.go
+	applyModeSettings(database, mm, log) // dashboard overrides (mode_settings.go)
+	startServerChatOnlineCount()         // server_chat.go
 	mm.Start()
 	defer mm.Stop()
 

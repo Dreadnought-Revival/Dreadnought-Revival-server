@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -247,7 +248,7 @@ func GameModeConfigs() []GameModeConfig {
 // GUESS: team size 5.
 const CustomGameClientName = "CustomGame"
 
-func customGameListed() bool { return os.Getenv("DN_CUSTOM_GAME_TILE") == "1" }
+func customGameListed() bool { return CustomGameListed() } // switches.go
 
 // Havoc: the wave-defence mode (GameMode_Havoc_BP, YGMT_HAVOC). The client's
 // own mode list (GlobalUI.uasset) has an entry named "HAVOC" with
@@ -271,7 +272,7 @@ var havocMaps = []GameMap{
 	{Name: "HVC_Map2", Path: "/Game/Maps/Havoc/Map2/HVC_Map2_P"},
 }
 
-func havocListed() bool { return os.Getenv("DN_HAVOC") == "1" }
+func havocListed() bool { return HavocListed() } // switches.go
 
 // PvE season events (mmogbrain's pve_seasons.go).
 //
@@ -330,6 +331,9 @@ type Matchmaker struct {
 	// have not queued: once the oldest queued player has waited this long, the
 	// match starts with whoever is queued.
 	MaxWait time.Duration
+	// sizeMu guards PlayersPerMatch and MaxWait once the matchmaker runs:
+	// the admin dashboard changes them (SetSizing, switches.go).
+	sizeMu sync.RWMutex
 	// BackfillWindow lets waiting players join a running match that started
 	// less than this ago instead of starting a new one (backfill.go). 0 = off.
 	BackfillWindow time.Duration
@@ -703,7 +707,7 @@ func (m *Matchmaker) tick() error {
 		} else if placed > 0 {
 			continue
 		}
-		maxSize := m.PlayersPerMatch
+		maxSize, maxWait := m.Sizing()
 		if (b.GameMode == PvEGameMode || b.GameMode == HavocGameMode) && maxSize > pveTeamSize {
 			maxSize = pveTeamSize // one cooperative team
 		}
@@ -713,7 +717,7 @@ func (m *Matchmaker) tick() error {
 			if t, ok := parseQueuedAt(b.Oldest); ok {
 				waited = now.Sub(t)
 			}
-			size = requiredMatchSize(b.Count, available, maxSize, waited, m.MaxWait)
+			size = requiredMatchSize(b.Count, available, maxSize, waited, maxWait)
 		}
 		if size < 1 || b.Count < size {
 			continue
@@ -963,7 +967,7 @@ const EscalationGameMode = "Escalation"
 // IsEscalationQueue reports whether matches queued for this mode run as
 // Escalation.
 func IsEscalationQueue(queued string) bool {
-	q := strings.TrimSpace(os.Getenv("DN_ESCALATION_QUEUE"))
+	q := EscalationQueue() // DN_ESCALATION_QUEUE or the dashboard (switches.go)
 	return q != "" && strings.EqualFold(q, queued)
 }
 
@@ -973,7 +977,8 @@ func IsEscalationQueue(queued string) bool {
 const DefaultSpawnableGameMode = "TM"
 
 func (m *Matchmaker) formMatch(gameMode string, tierMin int, fleetType int) error {
-	return m.formMatchOfSize(gameMode, tierMin, fleetType, m.PlayersPerMatch)
+	players, _ := m.Sizing()
+	return m.formMatchOfSize(gameMode, tierMin, fleetType, players)
 }
 
 // queueEntry is one waiting player.

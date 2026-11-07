@@ -102,6 +102,7 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     <button data-tab="moderation">Moderation</button>
     <button data-tab="fairplay">Fair play</button>
     <button data-tab="economy">Economy</button>
+    <button data-tab="modes">Game modes</button>
     <button data-tab="matches">Matches</button>
     <button data-tab="reports">Bug reports</button>
     <button data-tab="telemetry">Telemetry</button>
@@ -186,6 +187,24 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
         <span class="muted" id="eInfo"></span></div>
       <div class="muted">Paid on top of the contract's credits when a player claims a finished contract, from the next claim on. 0 turns it off. The contract card in the game only shows the credits; the GP shows up in the player's balance.</div>
       <p id="eMsg"></p>
+    </section>
+  </div>
+
+  <div id="tab-modes" class="hidden">
+    <section style="margin-top:0"><h2>Queues</h2>
+      <div class="row"><span class="muted">The queues the game offers and the mode their matches are hosted in.</span></div>
+      <div class="table-wrap"><table><thead><tr><th>Queue (as the game sends it)</th><th>Hosted as</th><th class="num">Team size</th></tr></thead><tbody id="gmQueues"></tbody></table></div>
+    </section>
+    <section class="manage"><h2>Switches</h2>
+      <div class="fields">
+        <label>Escalation runs on<select id="gmEscalation"></select><span class="muted" id="gmEscalationSrc"></span></label>
+        <label>Havoc tile<select id="gmHavoc"><option value="1">Listed</option><option value="0">Hidden</option></select><span class="muted" id="gmHavocSrc"></span></label>
+        <label>Custom Game tile<select id="gmCustom"><option value="1">Listed</option><option value="0">Hidden</option></select><span class="muted" id="gmCustomSrc"></span></label>
+        <label><span id="gmPlayersLabel">Players per match</span><input id="gmPlayers" type="number" min="1" step="1"><span class="muted" id="gmPlayersSrc"></span></label>
+        <label>Max wait for idle players (s)<input id="gmWait" type="number" min="0" step="1"><span class="muted" id="gmWaitSrc"></span></label>
+      </div>
+      <div class="row"><button class="btn" id="gmSave">Save changes</button><span class="muted">Applies at once to matchmaking. A tile shows or hides at each player's next login.</span></div>
+      <p id="gmMsg"></p>
     </section>
   </div>
 
@@ -750,6 +769,54 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
   $('fpScopeClear').onclick = () => { Object.assign(fpScope, { pid: '', match: '', label: '' }); $('fpFlagged').checked = true; $('fpDays').value = '7'; loadFairPlay(); };
   $('mFairPlay').onclick = () => fpOpen({ pid: managed, label: $('mName').textContent });
 
+  // --- game modes ---------------------------------------------------------
+  let gmLoaded = null;
+  const GM_FIELDS = [
+    ['escalation_queue', 'gmEscalation', (v) => v, (v) => v],
+    ['havoc', 'gmHavoc', (v) => (v ? '1' : '0'), (v) => v === '1'],
+    ['custom_game', 'gmCustom', (v) => (v ? '1' : '0'), (v) => v === '1'],
+    ['max_players', 'gmPlayers', (v) => String(v), (v) => Math.trunc(Number(v))],
+    ['max_wait_s', 'gmWait', (v) => String(v), (v) => Math.trunc(Number(v))],
+  ];
+  const gmShow = (k, v) => k === 'escalation_queue' ? (v || 'no queue') : typeof v === 'boolean' ? (v ? 'listed' : 'hidden') : String(v);
+  function renderModes(d, keepEdits) {
+    gmLoaded = d;
+    fill('gmQueues', d.queues.map((q) => el('tr', {}, el('td', {}, `${modeName(q.queue)} (${q.queue})`),
+      el('td', {}, q.runs === q.queue ? modeName(q.runs) : el('span', { class: 'chip warn' }, modeName(q.runs))), el('td', { class: 'num' }, q.team_size))), 'No queues.', 3);
+    const sel = $('gmEscalation');
+    if (!sel.options.length) {
+      sel.append(el('option', { value: '' }, 'No queue (off)'));
+      d.queueable.forEach((m) => sel.append(el('option', { value: m }, `${modeName(m)} (${m})`)));
+    }
+    $('gmPlayers').max = d.max_players_max; $('gmWait').max = d.max_wait_s_max;
+    $('gmPlayersLabel').textContent = d.autoscale ? 'Max players per match' : 'Players per match (fixed)';
+    for (const [k, id, toInput] of GM_FIELDS) {
+      const s = d[k]; if (!s) continue;
+      if (!keepEdits) $(id).value = toInput(s.value);
+      const src = $(id + 'Src'); src.replaceChildren();
+      if (s.dashboard) {
+        src.append(`set here (default ${gmShow(k, s.env)}) `, el('a', { class: 'link', onclick: () => gmSave({ reset: [k] }, 'Back to the default.') }, 'use default'));
+      } else src.append('default (environment)');
+    }
+  }
+  async function loadModes() { renderModes(await api('/modes'), !!gmLoaded); }
+  async function gmSave(body, okMsg) {
+    const msg = $('gmMsg');
+    try { renderModes(await postJSON('/modes', body), false); msg.className = 'ok'; msg.textContent = okMsg; }
+    catch (e) { if (e.message !== 'forbidden') { msg.className = 'err'; msg.textContent = String(e.message || e); } }
+  }
+  $('gmSave').onclick = () => {
+    if (!gmLoaded) return;
+    const body = {}; const what = [];
+    for (const [k, id, toInput, fromInput] of GM_FIELDS) {
+      const s = gmLoaded[k]; if (!s || $(id).value === toInput(s.value)) continue;
+      body[k] = fromInput($(id).value); what.push(`${k.replace(/_/g, ' ')}: ${gmShow(k, s.value)} -> ${gmShow(k, body[k])}`);
+    }
+    if (!what.length) { $('gmMsg').className = 'muted'; $('gmMsg').textContent = 'Nothing changed.'; return; }
+    if (!confirm('Change:\n' + what.join('\n'))) return;
+    gmSave(body, 'Saved.');
+  };
+
   // --- economy ------------------------------------------------------------
   let economyShown = false;
   function renderEconomy(d) {
@@ -825,7 +892,7 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
   }
 
   const loaders = {
-    overview: loadOverview, metrics: loadMetrics, moderation: loadModeration, fairplay: loadFairPlay, economy: loadEconomy, instances: loadInstances, players: () => Promise.all([loadOnline(), loadPlayers()]),
+    overview: loadOverview, metrics: loadMetrics, moderation: loadModeration, fairplay: loadFairPlay, economy: loadEconomy, modes: loadModes, instances: loadInstances, players: () => Promise.all([loadOnline(), loadPlayers()]),
     matches: loadMatches, reports: loadReports, telemetry: loadTelemetry, logs: loadLog,
   };
   async function refresh() {

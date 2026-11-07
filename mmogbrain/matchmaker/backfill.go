@@ -88,11 +88,12 @@ func (m *Matchmaker) backfill(gameMode string, tierMin, fleetType int) (int, err
 	}
 
 	pvp := matchTeam(runMode, 1) == 2
+	maxPlayers, _ := m.Sizing()
 	placed := 0
 	for _, g := range groups {
 		var target *backfillMatch
 		for _, bm := range matches {
-			if bm.total+len(g) <= m.PlayersPerMatch {
+			if bm.total+len(g) <= maxPlayers {
 				target = bm
 				break
 			}
