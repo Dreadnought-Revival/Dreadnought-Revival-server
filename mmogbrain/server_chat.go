@@ -90,12 +90,23 @@ func serverChatProfile() map[string]any {
 }
 
 // announce posts one automatic Server line (online count, open queues) to
-// everyone in the Global channel, unless DN_SERVER_CHAT=0.
+// everyone in the Global channel, unless DN_SERVER_CHAT=0. Each player's copy
+// starts with the time in their own clock (chatTimeStamp, player_clock.go;
+// operator 2026-11-07).
 func (h *socialHub) announce(text string) {
 	if !serverChatEnabled() {
 		return
 	}
-	h.serverLine(text)
+	channel := defaultChatChannels[0]
+	profile := serverChatProfile()
+	now := time.Now()
+	sent := 0
+	for _, peer := range h.peersIn(channel) {
+		_ = peer.send(profile)
+		_ = peer.send(chatMessageNotice("chat.channel.message", channel, serverChatEntry(), chatTimeStamp(peer.playerID, now)+text))
+		sent++
+	}
+	logrus.WithField("recipients", sent).Info("server chat: " + text)
 }
 
 // serverLine posts one Server line to everyone in the Global channel and

@@ -3,9 +3,25 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"regexp"
 	"testing"
 	"time"
 )
+
+// stampedRE is an automatic Server line: the player's time, then the text.
+var stampedRE = regexp.MustCompile(`^\[[^\]]+\] (.*)$`)
+
+// unstamped checks a line carries its time stamp and returns the text.
+func unstamped(t *testing.T, line any) string {
+	t.Helper()
+	s, _ := line.(string)
+	m := stampedRE.FindStringSubmatch(s)
+	if m == nil {
+		t.Errorf("line %q has no time stamp", s)
+		return s
+	}
+	return m[1]
+}
 
 // pushLines reads every push line of a peer into a channel, so a check for
 // "nothing arrived" never leaves a half-finished read behind.
@@ -63,7 +79,7 @@ func TestServerAnnouncementReachesGlobal(t *testing.T) {
 	}
 	method, data = readNotice(t, read)
 	if method != "chat.channel.message" || data["channel"] != defaultChatChannels[0] ||
-		data["sender"] != serverChatGUID || data["text"] != "3 players online" {
+		data["sender"] != serverChatGUID || unstamped(t, data["text"]) != "3 players online" {
 		t.Errorf("second push %s %v, want the message in Global from the Server GUID", method, data)
 	}
 }
@@ -123,7 +139,7 @@ func TestQueueStartedAnnouncement(t *testing.T) {
 	nextPush(t, pushes) // profile
 	_, data := nextPush(t, pushes)
 	want := "A player is searching for a Veteran Team Deathmatch match. Queue with your Veteran fleet now to play together!"
-	if data["text"] != want {
+	if unstamped(t, data["text"]) != want {
 		t.Errorf("announcement %q, want %q", data["text"], want)
 	}
 

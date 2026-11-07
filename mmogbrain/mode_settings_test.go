@@ -52,7 +52,7 @@ func TestAdminModeSettings(t *testing.T) {
 
 	for body, want := range map[string]int{
 		`{"escalation_queue":"Nope"}`: http.StatusBadRequest,
-		`{"max_players":121}`:          http.StatusBadRequest, // two teams of MaxTeamSize
+		`{"max_players":121}`:         http.StatusBadRequest, // two teams of MaxTeamSize
 		`{"max_players":0}`:           http.StatusBadRequest,
 		`{"max_wait_s":601}`:          http.StatusBadRequest,
 		`{"reset":["everything"]}`:    http.StatusBadRequest,
@@ -161,7 +161,7 @@ func TestAdminTeamSizes(t *testing.T) {
 		`{"team_sizes":{"TDM":61}}`: http.StatusBadRequest,
 		`{"team_sizes":{"TDM":0}}`:  http.StatusBadRequest,
 		`{"team_sizes":{"Nope":5}}`: http.StatusBadRequest,
-		`{"max_players":121}`:        http.StatusBadRequest,
+		`{"max_players":121}`:       http.StatusBadRequest,
 	} {
 		if rec := adminPost(r, "/admin/api/modes", "test-admin-key", body); rec.Code != want {
 			t.Errorf("%s: %d, want %d", body, rec.Code, want)

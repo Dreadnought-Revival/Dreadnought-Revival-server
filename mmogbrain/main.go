@@ -72,6 +72,7 @@ func main() {
 	loadTechTreeCosts()                                    // dashboard tech tree costs (techtree_costs.go)
 	loadTuneEditor()                                       // dashboard balancing versions (tune_editor.go)
 	loadTuneTestAccounts()                                 // tune test accounts (tune_reply.go)
+	loadPlayerClocks()                                     // launcher-reported clocks (player_clock.go)
 	if n := refundFreeCosmeticPurchases(database); n > 0 { // vanity_ownership.go
 		log.WithField("purchases", n).Info("cosmetics: refunded purchases of free cosmetics")
 	}
@@ -386,6 +387,7 @@ func newRouter(h *handlers.Handler, secret []byte, adminKey, internalAPIKey stri
 	// Battle-server mod: the live balancing version (battle_tune.go). Loopback only.
 	r.HandleFunc("/battle/tune", battleTuneHandler).Methods(http.MethodGet)
 	r.HandleFunc("/online", onlineHandler).Methods(http.MethodGet)
+	r.HandleFunc("/launcher/clock", launcherClockHandler).Methods(http.MethodPost)
 
 	// Admin dashboard (admin_dashboard.go): registered before the /admin
 	// subrouter so the static page is served without a key; its data API

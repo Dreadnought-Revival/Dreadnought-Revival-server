@@ -561,6 +561,17 @@ var migrations = []string{
 		note       TEXT NOT NULL DEFAULT '',
 		changes    TEXT NOT NULL
 	)`,
+	// The player's clock as their launcher reports it on Play
+	// (player_clock.go): UTC offset in minutes and the Windows short-time
+	// pattern, so Server chat lines carry the player's own local time.
+	`CREATE TABLE IF NOT EXISTS player_clock (
+		user_id    TEXT PRIMARY KEY,
+		utc_offset INTEGER NOT NULL,
+		pattern    TEXT NOT NULL DEFAULT '',
+		am         TEXT NOT NULL DEFAULT '',
+		pm         TEXT NOT NULL DEFAULT '',
+		updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
 }
 
 func Open(path string) (*sql.DB, error) {

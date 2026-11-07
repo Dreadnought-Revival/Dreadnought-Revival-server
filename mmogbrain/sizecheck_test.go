@@ -418,8 +418,8 @@ var targetSizes = map[string]int{
 	// ship -- all four starters are Mediums -- while tech tree ships, which
 	// carry a ship id, loaded the correct bay for their size. See the comment
 	// at the field in buildMmogPlayerFleetsPayload.
-	"YA_PlayerFleets":          2144,
-	"YA_GetSeasonProgress":     146,
+	"YA_PlayerFleets":      2144,
+	"YA_GetSeasonProgress": 146,
 	// 326 -> 333 (+7): the default captain's headwear, "-1" -> "872349736".
 	"YA_GetPlayersInformation": 333,
 	// Was 115, -14 after removing fabricated ReturnValue field (issue #52).
