@@ -1847,6 +1847,19 @@ on sides with humans. Log lines: `team size: DNTeamSize=<n> on the command
 line`, `team size: host <old> -> <n> per side`, `bot balance: ...`.
 
 The per-player arrays (DNPIDs, ships flown, team/name sync, fair-play checks,
-end-of-match transitions) hold 128 players. UNTESTED: whether the game spawns
-replacement bots after the match started, and how a host copes with up to
-60 ships a side. Built with `build-linux.sh`; not yet run on a host.
+end-of-match transitions) hold 128 players.
+
+**Bot list (verified in the exe, 2026-11-07).** The fill (`0x381FA0`) gives
+each entry of the mode's bot list (`m_npcPlayers`, `TArray<FYTrainingMatchAI>`
+at `gm+0x968`, 0x38 bytes, team at +8) at most one bot; a side never has more
+bots than its entries. Highlands TDM has 24 a side, so the first 40-a-side match
+(2026-11-07 15:07) stopped there. With `DNTeamSize` the mod now extends the list
+before the pre-match fill with copies of the side's own entries (each with its
+own copy of `m_npcSpawnIDs`; the slot array `gm+0x9A0` grows by itself,
+`0x3671C0`), and raises `m_maxSpawnsPerClassInATeam` (`gm+0x988`, 2 in the TDM
+data; where the game reads it is not traced) to the team size. Log lines:
+`bot list: extended for team size 40 -- T1 24 -> 40 ...`, `bot census: list T1
+.. T2 ..; alive T1 .. T2 ..; targets ...` (when the numbers change, at most
+every 30 s). Smoke-tested on a TDM host (entries 40/40, no crash); live from
+2026-11-07 15:34. UNTESTED in a played match: how many bots actually spawn,
+copies sharing spawn points, host load at 80 ships.

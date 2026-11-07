@@ -5285,6 +5285,134 @@ static int HostTeamSizeOverride() {
   return s_size;
 }
 
+// Bot census (2026-11-07): how many bots each side CAN have and has. The
+// team fill (0x381FA0, verified in the exe) walks the mode's bot list
+// (gm+0x968, count gm+0x970, 0x38 bytes an entry, team byte at +8) and lets
+// each entry hold at most one bot (its slot gm+0x9A0[i], a weak pointer;
+// count gm+0x9A8), spawning it (0x3671C0) while the team's live count is
+// under the target (gm+0x980 / +0x984). So a side never has more bots than
+// its entries in the list, whatever DNTeamSize asks. Logged when the
+// numbers change, at most every 30 s.
+#define OFF_GM_NPC_LIST 0x968
+#define OFF_GM_NPC_SLOTS 0x9A0
+#define NPC_ENTRY_SIZE 0x38
+static void BotCensusTick(uint8_t *gm) {
+  static void *s_gm = nullptr;
+  static DWORD s_last = 0;
+  static int s_prev[6] = {-1, -1, -1, -1, -1, -1};
+  DWORD now = GetTickCount();
+  if (s_gm == gm && now - s_last < 30000)
+    return;
+  int count = *(int32_t *)(gm + OFF_GM_NPC_COUNT);
+  uint8_t *list = *(uint8_t **)(gm + OFF_GM_NPC_LIST);
+  uint8_t *slots = *(uint8_t **)(gm + OFF_GM_NPC_SLOTS);
+  int nSlots = *(int32_t *)(gm + OFF_GM_NPC_SLOTS + 8);
+  if (count <= 0 || count > 512 || !IsReadable(list, (size_t)count * NPC_ENTRY_SIZE))
+    return;
+  int entries[3] = {0, 0, 0}, alive[3] = {0, 0, 0};
+  for (int i = 0; i < count; ++i) {
+    int team = list[(size_t)i * NPC_ENTRY_SIZE + 8];
+    if (team != 1 && team != 2)
+      continue;
+    ++entries[team];
+    if (slots && i < nSlots && nSlots <= 512 && IsReadable(slots + (size_t)i * 8, 8) &&
+        ((tWeakGet)(g_base + RVA_WEAK_PTR_GET))(slots + (size_t)i * 8))
+      ++alive[team];
+  }
+  int cur[6] = {entries[1], entries[2], alive[1], alive[2], *(int32_t *)(gm + OFF_GM_AI_TARGET_T1),
+                *(int32_t *)(gm + OFF_GM_AI_TARGET_T1 + 4)};
+  if (s_gm == gm && memcmp(cur, s_prev, sizeof cur) == 0)
+    return;
+  s_gm = gm;
+  s_last = now;
+  memcpy(s_prev, cur, sizeof cur);
+  Logf("bot census: list T1 %d T2 %d entries; alive T1 %d T2 %d; targets T1 %d T2 %d; team size %d; "
+       "max spawns per class in a team %d",
+       cur[0], cur[1], cur[2], cur[3], cur[4], cur[5], *(int32_t *)(gm + OFF_GM_TEAM_SIZE),
+       *(int32_t *)(gm + 0x988));
+}
+
+// Bot list extension for DNTeamSize (2026-11-07). A side can have at most as
+// many bots as it has entries in m_npcPlayers (see the census above): the
+// Highlands TDM list has 24 a side, so a team size of 40 stopped at 24 bots.
+// When the team size is larger, the list is extended once per game mode,
+// before the pre-match fill, with copies of that side's own entries
+// (FYTrainingMatchAI, 0x38 bytes, SDK: m_TMNpcName FName +0x00, m_team +0x08,
+// m_npcSpawnIDs TArray<FName> +0x10, m_aiFleetType +0x20, m_characterPreset
+// +0x28). The spawn-ID array is engine-owned memory, so each copy gets its
+// own (FMemory), the same way the engine copies the struct. The bot slots
+// (gm+0x9A0) need nothing: 0x3671C0 appends a slot for every entry past the
+// end of the slot array (verified in the exe). UNTESTED in a match: copies
+// share their originals' spawn points.
+#define OFF_GM_NPC_MAX 0x974
+#define OFF_GM_MAX_SPAWNS_PER_CLASS 0x988 // m_maxSpawnsPerClassInATeam (SDK)
+#define NPC_LIST_LIMIT 256
+typedef void(__fastcall *tFMemFreeBots)(void *p);
+#define RVA_FMEMORY_FREE_BOTS 0xBFC9C0 // FMemory::Free, the same as RVA_FMEMORY_FREE
+static void ExtendBotList(uint8_t *gm, int size) {
+  static void *s_done = nullptr;
+  if (s_done == gm || size <= 0)
+    return;
+  s_done = gm;
+  int n = *(int32_t *)(gm + OFF_GM_NPC_COUNT);
+  uint8_t *list = *(uint8_t **)(gm + OFF_GM_NPC_LIST);
+  if (n <= 0 || n > NPC_LIST_LIMIT || !IsReadable(list, (size_t)n * NPC_ENTRY_SIZE))
+    return;
+  int per[3] = {0, 0, 0};
+  for (int i = 0; i < n; ++i) {
+    int team = list[(size_t)i * NPC_ENTRY_SIZE + 8];
+    if (team == 1 || team == 2)
+      ++per[team];
+  }
+  int add[3] = {0, per[1] > 0 && size > per[1] ? size - per[1] : 0, per[2] > 0 && size > per[2] ? size - per[2] : 0};
+  if (n + add[1] + add[2] > NPC_LIST_LIMIT) {
+    Logf("bot list: %d entries + %d + %d would pass %d; not extended", n, add[1], add[2], NPC_LIST_LIMIT);
+    return;
+  }
+  if (!add[1] && !add[2]) {
+    Logf("bot list: T1 %d T2 %d entries already cover team size %d", per[1], per[2], size);
+    return;
+  }
+  int total = n + add[1] + add[2];
+  uint8_t *nb = (uint8_t *)((tFMemoryMalloc)(g_base + RVA_FMEMORY_MALLOC))((size_t)total * NPC_ENTRY_SIZE, 0);
+  if (!nb) {
+    Logf("bot list: allocation of %d entries failed; not extended", total);
+    return;
+  }
+  memcpy(nb, list, (size_t)n * NPC_ENTRY_SIZE);
+  int k = n;
+  for (int team = 1; team <= 2; ++team) {
+    for (int j = 0, need = add[team]; need > 0; j = (j + 1) % n) {
+      uint8_t *src = list + (size_t)j * NPC_ENTRY_SIZE;
+      if (src[8] != team)
+        continue;
+      uint8_t *dst = nb + (size_t)k * NPC_ENTRY_SIZE;
+      memcpy(dst, src, NPC_ENTRY_SIZE);
+      // m_npcSpawnIDs: its own buffer.
+      uint8_t *ids = *(uint8_t **)(src + 0x10);
+      int idn = *(int32_t *)(src + 0x18);
+      uint8_t *copy = nullptr;
+      if (ids && idn > 0 && idn < 1024 && IsReadable(ids, (size_t)idn * 8)) {
+        copy = (uint8_t *)((tFMemoryMalloc)(g_base + RVA_FMEMORY_MALLOC))((size_t)idn * 8, 0);
+        if (copy)
+          memcpy(copy, ids, (size_t)idn * 8);
+      }
+      *(uint8_t **)(dst + 0x10) = copy;
+      *(int32_t *)(dst + 0x18) = copy ? idn : 0;
+      *(int32_t *)(dst + 0x1C) = copy ? idn : 0;
+      ++k;
+      --need;
+    }
+  }
+  *(uint8_t **)(gm + OFF_GM_NPC_LIST) = nb;
+  *(int32_t *)(gm + OFF_GM_NPC_COUNT) = total;
+  *(int32_t *)(gm + OFF_GM_NPC_MAX) = total;
+  ((tFMemFreeBots)(g_base + RVA_FMEMORY_FREE_BOTS))(list);
+  Logf("bot list: extended for team size %d -- T1 %d -> %d, T2 %d -> %d entries (copies of the map's own); "
+       "max spawns per class in a team %d",
+       size, per[1], per[1] + add[1], per[2], per[2] + add[2], *(int32_t *)(gm + OFF_GM_MAX_SPAWNS_PER_CLASS));
+}
+
 // Runs once a second on the game thread (HookGameModeTimer).
 static void PlayersTick(uint8_t *gm) {
   __try {
@@ -5338,6 +5466,20 @@ static void PlayersTick(uint8_t *gm) {
         Logf("team size: host %d -> %d per side (DNTeamSize from mmogbrain)", *(int32_t *)(gm + OFF_GM_TEAM_SIZE), forced);
         *(int32_t *)(gm + OFF_GM_TEAM_SIZE) = forced;
       }
+      if (forced > 0) {
+        ExtendBotList(gm, forced);
+        // m_maxSpawnsPerClassInATeam (+0x988, SDK) is 2 in the TDM data; a
+        // designer cap on bots per ship class that would hold a big side far
+        // under its team size. Raised to the team size with DNTeamSize.
+        // GUESS: where the game reads it is not traced.
+        if (*(int32_t *)(gm + OFF_GM_MAX_SPAWNS_PER_CLASS) > 0 &&
+            *(int32_t *)(gm + OFF_GM_MAX_SPAWNS_PER_CLASS) < forced) {
+          Logf("team size: max spawns per class in a team %d -> %d (DNTeamSize)",
+               *(int32_t *)(gm + OFF_GM_MAX_SPAWNS_PER_CLASS), forced);
+          *(int32_t *)(gm + OFF_GM_MAX_SPAWNS_PER_CLASS) = forced;
+        }
+      }
+      BotCensusTick(gm);
       int size = *(int32_t *)(gm + OFF_GM_TEAM_SIZE);
       static void *s_botsSetUp = nullptr; // the game mode whose bots 0x3678F0 has set up
       for (int team = 1; team <= 2; ++team) {
