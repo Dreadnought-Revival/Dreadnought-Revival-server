@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -334,6 +335,9 @@ type Matchmaker struct {
 	// sizeMu guards PlayersPerMatch and MaxWait once the matchmaker runs:
 	// the admin dashboard changes them (SetSizing, switches.go).
 	sizeMu sync.RWMutex
+	// hold stops new matches from forming (queued players keep waiting):
+	// the admin dashboard's restart waits for the running ones to end.
+	hold atomic.Bool
 	// BackfillWindow lets waiting players join a running match that started
 	// less than this ago instead of starting a new one (backfill.go). 0 = off.
 	BackfillWindow time.Duration
@@ -656,6 +660,9 @@ func (m *Matchmaker) tick() error {
 		m.Log.WithError(err).Warn("stale match sweep failed")
 	}
 	m.pollBattleServers()
+	if m.hold.Load() {
+		return nil // no new matches while a restart waits (SetHold, switches.go)
+	}
 
 	// Group by game_mode and tier_min to match players within compatible tier ranges.
 	// Players with the same tier_min are treated as compatible for matchmaking.

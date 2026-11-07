@@ -121,6 +121,20 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     <section><h2>Services</h2><div class="grid" id="services"></div></section>
     <section><h2>Matches in the last 24 h by mode</h2><div class="grid" id="modes"></div></section>
     <section><h2>Battle server outcomes (newest 40 logs)</h2><div class="grid" id="crashes"></div></section>
+    <section class="manage"><h2>Restart mmogbrain</h2>
+      <div class="muted" style="margin-bottom:8px">Waits until no battle server is running, then restarts mmogbrain with scripts/start-services.sh (which reads run/secrets.env again). Everyone online is disconnected, as with a restart by hand; the game server is back in a few seconds.</div>
+      <div id="rsIdle">
+        <div class="row">
+          <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="rsHold" checked> Hold new matches while waiting (players can still queue)</label>
+        </div>
+        <input id="rsAnnounce" type="text" maxlength="300" style="width:100%" value="The server restarts when the current matches have ended. It will be back in a minute.">
+        <div class="row" style="margin-top:8px"><button class="btn danger" id="rsStart">Restart when idle</button><span class="muted">The text above goes to Global chat when the wait starts; leave it empty to send nothing.</span></div>
+      </div>
+      <div id="rsWaiting" class="hidden">
+        <div class="row"><span class="chip warn" id="rsStatus"></span><button class="btn" id="rsCancel">Cancel</button></div>
+      </div>
+      <p id="rsMsg"></p>
+    </section>
   </div>
 
   <div id="tab-metrics" class="hidden">
@@ -393,7 +407,32 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     else rows.forEach((r) => t.append(r));
   };
 
+  function renderRestart(d) {
+    $('rsIdle').classList.toggle('hidden', !!d.pending);
+    $('rsWaiting').classList.toggle('hidden', !d.pending);
+    $('rsStart').disabled = !d.available;
+    if (!d.available) { $('rsMsg').className = 'err'; $('rsMsg').textContent = 'scripts/start-services.sh is not beside mmogbrain: restart it by hand.'; }
+    else if (d.error && !d.pending) { $('rsMsg').className = 'err'; $('rsMsg').textContent = d.error; }
+    if (d.pending) {
+      const running = d.running < 0 ? 'checking the battle servers' : `${fmt(d.running)} battle server${d.running === 1 ? '' : 's'} still running`;
+      $('rsStatus').textContent = d.stage === 'restarting' ? 'Restarting now…'
+        : `Waiting since ${d.since} UTC (${ago(d.since)}): ${running}${d.hold_matches ? ', new matches held' : ''}${d.error ? ' · ' + d.error : ''}`;
+    }
+  }
+  $('rsStart').onclick = async () => {
+    const hold = $('rsHold').checked; const announce = $('rsAnnounce').value.trim();
+    if (!confirm('Restart mmogbrain as soon as no battle server is running?\n\nEveryone online will be disconnected.' + (hold ? '\nNew matches are held until then.' : ''))) return;
+    try { renderRestart(await postJSON('/restart', { hold_matches: hold, announce })); $('rsMsg').className = 'ok'; $('rsMsg').textContent = 'Waiting for the battle servers to finish.'; }
+    catch (e) { if (e.message !== 'forbidden') { $('rsMsg').className = 'err'; $('rsMsg').textContent = String(e.message || e); } }
+  };
+  $('rsCancel').onclick = async () => {
+    if (!confirm('Cancel the restart? Held matches start again.')) return;
+    try { renderRestart(await postJSON('/restart/cancel', {})); $('rsMsg').className = 'ok'; $('rsMsg').textContent = 'Cancelled.'; }
+    catch (e) { if (e.message !== 'forbidden') { $('rsMsg').className = 'err'; $('rsMsg').textContent = String(e.message || e); } }
+  };
+
   async function loadOverview() {
+    api('/restart').then(renderRestart).catch(() => {});
     const o = await api('/overview');
     $('cards').replaceChildren(
       card('Online now', fmt(o.online)),

@@ -110,3 +110,10 @@ func (m *Matchmaker) SetSizing(players int, maxWait time.Duration) {
 // AutoScaled reports whether the match size follows the players online
 // (PlayersPerMatch is then a cap) rather than being fixed.
 func (m *Matchmaker) AutoScaled() bool { return m.OnlinePlayers != nil }
+
+// SetHold stops (true) or resumes (false) forming new matches. Players can
+// still queue; running matches are not touched.
+func (m *Matchmaker) SetHold(on bool) { m.hold.Store(on) }
+
+// Held reports whether new matches are held back.
+func (m *Matchmaker) Held() bool { return m.hold.Load() }
