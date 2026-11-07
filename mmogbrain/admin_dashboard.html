@@ -713,8 +713,22 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
   // --- metrics ------------------------------------------------------------
   const MODE_NAMES = { TDM: 'Team Deathmatch', TurboTDM: 'Turbo TDM', PodTDM: 'Ceres Awakens', TE: 'Team Elimination', TER: 'Conquest', Territory: 'Conquest', BC: 'Bootcamp', Onslaught: 'Onslaught' };
   const modeName = (m) => MODE_NAMES[m] ? `${MODE_NAMES[m]}` : (m || '?');
+  // Audit details are JSON; nested values (price and tech tree changes, game
+  // mode switches) are spelled out instead of printing "[object Object]".
+  const auditValue = (v) => {
+    if (v === null || v === undefined) return '';
+    if (typeof v !== 'object') return String(v);
+    if (Array.isArray(v)) return v.map(auditValue).filter((x) => x !== '').join('; ');
+    if ('from' in v && 'to' in v) {
+      const what = ['name', 'field'].filter((k) => v[k] !== undefined && v[k] !== '').map((k) => auditValue(v[k])).join(' ');
+      const extra = Object.entries(v).filter(([k, x]) => !['from', 'to', 'name', 'field', 'item'].includes(k) && x !== null && x !== '')
+        .map(([k, x]) => `${k} ${auditValue(x)}`).join(', ');
+      return `${what ? what + ': ' : ''}${auditValue(v.from) || '—'} → ${auditValue(v.to) || '—'}${extra ? ` (${extra})` : ''}`;
+    }
+    return Object.entries(v).filter(([, x]) => x !== null && x !== '').map(([k, x]) => `${k} ${auditValue(x)}`).join(', ');
+  };
   const auditText = (raw) => {
-    try { return Object.entries(JSON.parse(raw)).filter(([, v]) => v !== null && v !== '').map(([k, v]) => `${k}: ${v}`).join(' · '); } catch (e) { return raw; }
+    try { return Object.entries(JSON.parse(raw)).map(([k, v]) => [k, auditValue(v)]).filter(([, v]) => v !== '').map(([k, v]) => `${k}: ${v}`).join(' · '); } catch (e) { return raw; }
   };
   const NS = 'http://www.w3.org/2000/svg';
   function svg(tag, attrs = {}, ...kids) {
