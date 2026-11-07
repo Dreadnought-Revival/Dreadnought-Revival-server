@@ -117,3 +117,80 @@ func (m *Matchmaker) SetHold(on bool) { m.hold.Store(on) }
 
 // Held reports whether new matches are held back.
 func (m *Matchmaker) Held() bool { return m.hold.Load() }
+
+// --- team sizes per mode (admin dashboard) --------------------------------------
+
+// MaxTeamSize bounds what the dashboard may set (operator 2026-11-07: 60).
+// UNTESTED at that size: maps ship around 8 bot slots per team, the host
+// runs every bot's AI, and more humans than a map has player starts fail to
+// spawn ("No Available PlayerStart Found!").
+const MaxTeamSize = 60
+
+var teamSizes struct {
+	mu sync.RWMutex
+	m  map[string]int // queue mode -> max humans per team
+}
+
+// TeamsIn is how many teams of humans a match of this queue has: co-op
+// modes put every human on team 1 (matchTeam), PvP modes two.
+func TeamsIn(queued string) int {
+	if matchTeam(queued, 1) == matchTeam(queued, 0) {
+		return 1
+	}
+	return 2
+}
+
+// DefaultTeamSize is the most humans per team a queue took before team sizes
+// could be set (2026-11-07): PvP 5 a side (the 10-player cap), co-op modes
+// the whole 10-player cap on one team, PvE and Havoc one team of 5.
+func DefaultTeamSize(queued string) int {
+	switch {
+	case queued == PvEGameMode || queued == HavocGameMode:
+		return pveTeamSize
+	case TeamsIn(queued) == 1:
+		return 10
+	}
+	return 5
+}
+
+// SetTeamSizeOverride sets a queue's max humans per team; nil goes back to
+// the default.
+func SetTeamSizeOverride(queued string, n *int) {
+	teamSizes.mu.Lock()
+	defer teamSizes.mu.Unlock()
+	if teamSizes.m == nil {
+		teamSizes.m = map[string]int{}
+	}
+	if n == nil {
+		delete(teamSizes.m, queued)
+		return
+	}
+	teamSizes.m[queued] = *n
+}
+
+// TeamSizeFor is a queue's max humans per team, and whether the dashboard set it.
+func TeamSizeFor(queued string) (int, bool) {
+	teamSizes.mu.RLock()
+	defer teamSizes.mu.RUnlock()
+	if n, ok := teamSizes.m[queued]; ok {
+		return n, true
+	}
+	return DefaultTeamSize(queued), false
+}
+
+// maxPlayersFor is the most humans one match of this queue takes: its teams
+// times its team size, never over the overall cap.
+func maxPlayersFor(queued string, overallCap int) int {
+	size, _ := TeamSizeFor(queued)
+	n := size * TeamsIn(queued)
+	if overallCap > 0 && n > overallCap {
+		n = overallCap
+	}
+	return n
+}
+
+// MaxPlayersFor is maxPlayersFor with the matchmaker's current cap.
+func (m *Matchmaker) MaxPlayersFor(queued string) int {
+	players, _ := m.Sizing()
+	return maxPlayersFor(queued, players)
+}

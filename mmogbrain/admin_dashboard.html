@@ -212,8 +212,9 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
 
   <div id="tab-modes" class="hidden">
     <section style="margin-top:0"><h2>Queues</h2>
-      <div class="row"><span class="muted">The queues the game offers and the mode their matches are hosted in.</span></div>
-      <div class="table-wrap"><table><thead><tr><th>Queue (as the game sends it)</th><th>Hosted as</th><th class="num">Team size</th></tr></thead><tbody id="gmQueues"></tbody></table></div>
+      <div class="row"><span class="muted">The queues the game offers, the mode their matches are hosted in, and how many players a team takes. Co-op modes put every player on one team (bots fill the rest); PvP modes have two. A match never goes over "Players per match" below. A team size set here also goes to the battle server, which fills each side with bots up to it and keeps it there as players join and leave (needs the battle-server DLL from 2026-11-07); a mode left on its default keeps the battle server's own bot count. Large teams are untested: every bot is a full ship the battle server has to run.</span></div>
+      <div class="table-wrap"><table><thead><tr><th>Queue (as the game sends it)</th><th>Hosted as</th><th>Max players per team</th><th class="num">Teams</th><th class="num">Max in a match</th><th></th></tr></thead><tbody id="gmQueues"></tbody></table></div>
+      <div class="row" style="margin-top:8px"><button class="btn" id="gmSaveTeams">Save team sizes</button><span class="muted">Applies at once to new matches.</span></div>
     </section>
     <section class="manage"><h2>Switches</h2>
       <div class="fields">
@@ -923,8 +924,15 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
   const gmShow = (k, v) => k === 'escalation_queue' ? (v || 'no queue') : typeof v === 'boolean' ? (v ? 'listed' : 'hidden') : String(v);
   function renderModes(d, keepEdits) {
     gmLoaded = d;
-    fill('gmQueues', d.queues.map((q) => el('tr', {}, el('td', {}, `${modeName(q.queue)} (${q.queue})`),
-      el('td', {}, q.runs === q.queue ? modeName(q.runs) : el('span', { class: 'chip warn' }, modeName(q.runs))), el('td', { class: 'num' }, q.team_size))), 'No queues.', 3);
+    fill('gmQueues', d.queues.map((q) => {
+      const ts = q.team_size;
+      const input = ts ? el('input', { type: 'number', min: '1', max: String(d.max_team_size), step: '1', value: String(ts.value), 'data-mode': q.mode, 'data-cur': String(ts.value), style: 'width:80px' }) : el('span', { class: 'muted' }, 'lobby');
+      return el('tr', {}, el('td', {}, `${modeName(q.queue)} (${q.queue})`),
+        el('td', {}, q.runs === q.queue ? modeName(q.runs) : el('span', { class: 'chip warn' }, modeName(q.runs))),
+        el('td', {}, input, ts ? el('span', { class: 'muted' }, ts.dashboard ? ` (default ${ts.env}) ` : ' default') : ''),
+        el('td', { class: 'num' }, q.teams ?? ''), el('td', { class: 'num' }, q.max_players ?? ''),
+        el('td', {}, ts && ts.dashboard ? el('a', { class: 'link', onclick: () => gmSave({ team_sizes: { [q.mode]: null } }, `${q.queue}: back to the default.`) }, 'use default') : ''));
+    }), 'No queues.', 6);
     const sel = $('gmEscalation');
     if (!sel.options.length) {
       sel.append(el('option', { value: '' }, 'No queue (off)'));
@@ -947,6 +955,16 @@ td a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
     try { renderModes(await postJSON('/modes', body), false); msg.className = 'ok'; msg.textContent = okMsg; }
     catch (e) { if (e.message !== 'forbidden') { msg.className = 'err'; msg.textContent = String(e.message || e); } }
   }
+  $('gmSaveTeams').onclick = () => {
+    const team_sizes = {}; const what = [];
+    document.querySelectorAll('#gmQueues input[data-mode]').forEach((inp) => {
+      const v = Math.trunc(Number(inp.value));
+      if (inp.value.trim() !== '' && String(v) !== inp.dataset.cur) { team_sizes[inp.dataset.mode] = v; what.push(`${inp.dataset.mode}: ${inp.dataset.cur} -> ${v} per team`); }
+    });
+    if (!what.length) { $('gmMsg').className = 'muted'; $('gmMsg').textContent = 'No team size changed.'; return; }
+    if (!confirm('Change team sizes?\n' + what.join('\n'))) return;
+    gmSave({ team_sizes }, 'Team sizes saved.');
+  };
   $('gmSave').onclick = () => {
     if (!gmLoaded) return;
     const body = {}; const what = [];

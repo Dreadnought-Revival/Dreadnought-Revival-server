@@ -30,7 +30,7 @@ const (
 	flagMatchMaxPlayers = "match_max_players"
 	flagMatchMaxWait    = "match_max_wait_s"
 
-	maxMatchPlayers = 10 // two teams of 5
+	maxMatchPlayers = 120 // two teams of matchmaker.MaxTeamSize
 	maxMatchWait    = 600 * time.Second
 )
 
@@ -48,7 +48,7 @@ func applyModeSettings(database *sql.DB, mm *matchmaker.Matchmaker, log *logrus.
 		return
 	}
 	flags := map[string]string{}
-	rows, err := database.Query(`SELECT name, value FROM server_flags WHERE name IN (?,?,?,?,?)`,
+	rows, err := database.Query(`SELECT name, value FROM server_flags WHERE name IN (?,?,?,?,?) OR name LIKE 'team\_size:%' ESCAPE '\'`,
 		flagEscalationQueue, flagHavocListed, flagCustomGame, flagMatchMaxPlayers, flagMatchMaxWait)
 	if err != nil {
 		return
@@ -62,6 +62,13 @@ func applyModeSettings(database *sql.DB, mm *matchmaker.Matchmaker, log *logrus.
 	_ = rows.Close()
 	if v, ok := flags[flagEscalationQueue]; ok {
 		matchmaker.SetEscalationQueueOverride(&v)
+	}
+	for k, v := range flags {
+		if mode, ok := strings.CutPrefix(k, "team_size:"); ok {
+			if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= matchmaker.MaxTeamSize {
+				matchmaker.SetTeamSizeOverride(mode, &n)
+			}
+		}
 	}
 	if v, ok := flags[flagHavocListed]; ok {
 		b := v == "1"
@@ -142,9 +149,19 @@ func adminModesJSON() map[string]any {
 	queues := []map[string]any{}
 	for _, mode := range matchmaker.GameModeConfigs() {
 		queued := matchmaker.NormalizeGameMode(mode.Name)
-		queues = append(queues, map[string]any{"queue": mode.Name, "runs": matchmaker.RunsAs(queued), "team_size": mode.TeamSize})
+		q := map[string]any{"queue": mode.Name, "mode": queued, "runs": matchmaker.RunsAs(queued), "client_team_size": mode.TeamSize}
+		if mode.Name != matchmaker.CustomGameClientName { // the lobby, not a queue
+			size, set := matchmaker.TeamSizeFor(queued)
+			q["team_size"] = adminSwitch{Value: size, Env: matchmaker.DefaultTeamSize(queued), Dashboard: set}
+			q["teams"] = matchmaker.TeamsIn(queued)
+			if mm := activeMatchmaker; mm != nil {
+				q["max_players"] = mm.MaxPlayersFor(queued)
+			}
+		}
+		queues = append(queues, q)
 	}
 	out["queues"] = queues
+	out["max_team_size"] = matchmaker.MaxTeamSize
 	if mm := activeMatchmaker; mm != nil {
 		players, wait := mm.Sizing()
 		out["max_players"] = adminSwitch{Value: players, Env: envMatchSizing.players, Dashboard: set[flagMatchMaxPlayers]}
@@ -161,12 +178,14 @@ func adminAPIModes(w http.ResponseWriter, _ *http.Request) { writeAdminJSON(w, a
 // switches to hand back to the environment.
 func adminAPISetModes(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		EscalationQueue *string  `json:"escalation_queue"`
-		Havoc           *bool    `json:"havoc"`
-		CustomGame      *bool    `json:"custom_game"`
-		MaxPlayers      *int     `json:"max_players"`
-		MaxWaitS        *int     `json:"max_wait_s"`
-		Reset           []string `json:"reset"`
+		EscalationQueue *string `json:"escalation_queue"`
+		Havoc           *bool   `json:"havoc"`
+		CustomGame      *bool   `json:"custom_game"`
+		MaxPlayers      *int    `json:"max_players"`
+		MaxWaitS        *int    `json:"max_wait_s"`
+		// TeamSizes sets max humans per team by queue mode; null = default.
+		TeamSizes map[string]*int `json:"team_sizes"`
+		Reset     []string        `json:"reset"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
 		writeAdminError(w, http.StatusBadRequest, "invalid body")
@@ -198,6 +217,21 @@ func adminAPISetModes(w http.ResponseWriter, r *http.Request) {
 	if req.MaxWaitS != nil && (*req.MaxWaitS < 0 || time.Duration(*req.MaxWaitS)*time.Second > maxMatchWait) {
 		writeAdminError(w, http.StatusBadRequest, "max wait must be 0 to "+strconv.Itoa(int(maxMatchWait/time.Second))+" seconds")
 		return
+	}
+	queueModes := map[string]bool{}
+	for _, mode := range matchmaker.GameModeConfigs() {
+		queueModes[matchmaker.NormalizeGameMode(mode.Name)] = true
+	}
+	queueModes[matchmaker.HavocGameMode], queueModes[matchmaker.PvEGameMode] = true, true
+	for mode, n := range req.TeamSizes {
+		if !queueModes[mode] {
+			writeAdminError(w, http.StatusBadRequest, "unknown queue "+mode)
+			return
+		}
+		if n != nil && (*n < 1 || *n > matchmaker.MaxTeamSize) {
+			writeAdminError(w, http.StatusBadRequest, "a team size must be 1 to "+strconv.Itoa(matchmaker.MaxTeamSize))
+			return
+		}
 	}
 	resettable := map[string]string{"escalation_queue": flagEscalationQueue, "havoc": flagHavocListed, "custom_game": flagCustomGame,
 		"max_players": flagMatchMaxPlayers, "max_wait_s": flagMatchMaxWait}
@@ -246,6 +280,25 @@ func adminAPISetModes(w http.ResponseWriter, r *http.Request) {
 		}
 		b.set(b.v)
 		changed[b.name] = *b.v
+	}
+	for mode, n := range req.TeamSizes {
+		flag := "team_size:" + mode
+		if n == nil {
+			if database != nil {
+				if _, err := database.Exec(`DELETE FROM server_flags WHERE name=?`, flag); err != nil {
+					writeAdminError(w, http.StatusInternalServerError, "could not reset "+flag)
+					return
+				}
+			}
+			matchmaker.SetTeamSizeOverride(mode, nil)
+			changed[flag] = "default"
+			continue
+		}
+		if !store(flag, strconv.Itoa(*n)) {
+			return
+		}
+		matchmaker.SetTeamSizeOverride(mode, n)
+		changed[flag] = *n
 	}
 	if req.MaxPlayers != nil || req.MaxWaitS != nil {
 		players, wait := -1, time.Duration(-1)

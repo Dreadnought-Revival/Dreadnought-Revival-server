@@ -1828,3 +1828,25 @@ from `YGameMode_PVE`; the log says so once per match:
 ```text
 [dn-host-loadout] pve: game mode ... (type 13) is a PvE episode -- no multiplayer bot fill
 ```
+
+## Team size from the admin dashboard: bot fill (`?DNTeamSize=`, added 2026-11-07)
+
+A team size set per mode on mmogbrain's admin dashboard (Game modes tab) goes
+to the host as `?DNTeamSize=<n>` on the map URL (dn-dedicated, from the
+match request's `team_size`), with `?MaxPlayers=<2n or n>` for the engine's
+session limit. In modes with bots (`m_enableSpawnAI`) the mod then:
+
+- replaces the host's own team size (`gm+0x97C`, copied into the bot targets
+  by the bot setup `0x3678F0`) with `n`;
+- once a second keeps **both** sides at `n - humans on that side`
+  (`SetTeamSizeAI 0x381550`), also a side without humans and also after a
+  side's bot target fell to 0, so bots come back when players leave.
+
+Without `DNTeamSize` nothing changes: the host's size, and bots trimmed only
+on sides with humans. Log lines: `team size: DNTeamSize=<n> on the command
+line`, `team size: host <old> -> <n> per side`, `bot balance: ...`.
+
+The per-player arrays (DNPIDs, ships flown, team/name sync, fair-play checks,
+end-of-match transitions) hold 128 players. UNTESTED: whether the game spawns
+replacement bots after the match started, and how a host copes with up to
+60 ships a side. Built with `build-linux.sh`; not yet run on a host.

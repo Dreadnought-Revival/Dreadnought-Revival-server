@@ -34,9 +34,14 @@ import (
 // path and legitimately contains "/". It is validated by prefix instead.
 var gameModeMapPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
-// maxPlayersPerInstance bounds the accepted player list. Production match size
-// caps at 10; twice that is headroom without allowing an unbounded payload.
-const maxPlayersPerInstance = 20
+// maxPlayersPerInstance bounds the accepted player list: two teams of
+// maxTeamSize (mmogbrain's admin dashboard can set team sizes up to 60,
+// 2026-11-07; the default match is 10).
+const maxPlayersPerInstance = 2 * maxTeamSize
+
+// maxTeamSize is the largest team_size accepted (mmogbrain's
+// matchmaker.MaxTeamSize).
+const maxTeamSize = 60
 
 // maxBodyBytes matches game-manager's 128KB limit.
 const maxBodyBytes = 1 << 17
@@ -109,6 +114,12 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
 		// rather than free-form URL options, so nothing a caller sends can reach
 		// argv except these two values.
 		FleetTier int `json:"fleet_tier"`
+		// TeamSize becomes ?DNTeamSize=<n>: battle-server-mod fills each side
+		// with bots up to it (humans included) and keeps it there as players
+		// come and go. 0 or absent: the host keeps its own team size. Sent
+		// with it, MaxPlayers also becomes ?MaxPlayers=<n>, the engine's
+		// session limit (AGameSession::InitOptions), so the humans fit.
+		TeamSize int `json:"team_size"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -156,7 +167,7 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	urlOptions, err := fleetTierURLOptions(req.FleetTier)
+	urlOptions, err := hostURLOptions(req.FleetTier, req.TeamSize, req.MaxPlayers)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -213,6 +224,28 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
 		// read the documented fields are unaffected.
 		"map_path": inst.MapPath,
 	})
+}
+
+// hostURLOptions is the map-URL options of a request: the fleet tier, and a
+// team size with the player limit that fits it (see the request fields).
+func hostURLOptions(fleetTier, teamSize, maxPlayers int) ([]string, error) {
+	opts, err := fleetTierURLOptions(fleetTier)
+	if err != nil {
+		return nil, err
+	}
+	if teamSize < 0 || teamSize > maxTeamSize {
+		return nil, fmt.Errorf("team_size must be 1 to %d, or omitted", maxTeamSize)
+	}
+	if maxPlayers < 0 || maxPlayers > maxPlayersPerInstance {
+		return nil, fmt.Errorf("max_players must be 1 to %d, or omitted", maxPlayersPerInstance)
+	}
+	if teamSize > 0 {
+		opts = append(opts, "DNTeamSize="+strconv.Itoa(teamSize))
+		if maxPlayers > 0 {
+			opts = append(opts, "MaxPlayers="+strconv.Itoa(maxPlayers))
+		}
+	}
+	return opts, nil
 }
 
 // fleetTierURLOptions turns a request's fleet_tier into map-URL options. Only

@@ -714,10 +714,10 @@ func (m *Matchmaker) tick() error {
 		} else if placed > 0 {
 			continue
 		}
-		maxSize, maxWait := m.Sizing()
-		if (b.GameMode == PvEGameMode || b.GameMode == HavocGameMode) && maxSize > pveTeamSize {
-			maxSize = pveTeamSize // one cooperative team
-		}
+		// The queue's teams times its team size (switches.go; PvE and Havoc
+		// are one cooperative team of 5 by default), within the overall cap.
+		overallCap, maxWait := m.Sizing()
+		maxSize := maxPlayersFor(b.GameMode, overallCap)
 		size := maxSize
 		if available >= 0 {
 			waited := time.Duration(0)
@@ -1141,7 +1141,13 @@ func (m *Matchmaker) formMatchOfSize(gameMode string, tierMin int, fleetType int
 	for i, e := range entries {
 		playerIDs[i] = e.UserID
 	}
-	serverIP, serverPort, instanceID, battleMatchID, err := m.requestGameInstance(launchMode, mapName, chosen.Path, playerIDs, fleetTierURLValue(fleetType))
+	// A team size set on the admin dashboard goes to the battle server too:
+	// the mod fills each side with bots up to it (switches.go, DNTeamSize).
+	hostTeamSize, hostMaxPlayers := 0, 0
+	if size, set := TeamSizeFor(queuedMode); set {
+		hostTeamSize, hostMaxPlayers = size, size*TeamsIn(queuedMode)
+	}
+	serverIP, serverPort, instanceID, battleMatchID, err := m.requestGameInstance(launchMode, mapName, chosen.Path, playerIDs, fleetTierURLValue(fleetType), hostTeamSize, hostMaxPlayers)
 	if err != nil {
 		// Rollback queue entries on failure
 		for _, e := range entries {
@@ -1253,7 +1259,7 @@ func fleetTierURLValue(fleetType int) int {
 // battleMatchID is the control plane's own match id (dn-dedicated's
 // "match_id", passed to the battle server as -MatchID=); battle-server-mod
 // reports results under it. Empty from game-manager, which has none.
-func (m *Matchmaker) requestGameInstance(gameMode, mapName, mapPath string, players []string, fleetTier int) (ip string, port int, instanceID, battleMatchID string, err error) {
+func (m *Matchmaker) requestGameInstance(gameMode, mapName, mapPath string, players []string, fleetTier, teamSize, maxPlayers int) (ip string, port int, instanceID, battleMatchID string, err error) {
 	spawn := map[string]interface{}{
 		"game_mode": gameMode,
 		"map":       mapName,
@@ -1264,6 +1270,14 @@ func (m *Matchmaker) requestGameInstance(gameMode, mapName, mapPath string, play
 	// ignores unknown fields, so its matches stay Recruit.
 	if fleetTier != 0 {
 		spawn["fleet_tier"] = fleetTier
+	}
+	// dn-dedicated turns team_size into ?DNTeamSize=<n> (the mod fills each
+	// side with bots to it) and max_players into the host's player limit.
+	// Only for a team size set on the dashboard; otherwise the host keeps its
+	// own team size and limits.
+	if teamSize > 0 {
+		spawn["team_size"] = teamSize
+		spawn["max_players"] = maxPlayers
 	}
 	body, err := json.Marshal(spawn)
 	if err != nil {

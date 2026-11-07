@@ -1,6 +1,7 @@
 package matchmaker
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -42,7 +43,7 @@ func TestRequestGameInstanceTimesOut(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, _, _, _, err := testMatchmaker(srv.URL).requestGameInstance("TM", "Highlands", "/Game/x", []string{"p1"}, 0)
+		_, _, _, _, err := testMatchmaker(srv.URL).requestGameInstance("TM", "Highlands", "/Game/x", []string{"p1"}, 0, 0, 0)
 		done <- err
 	}()
 
@@ -73,7 +74,7 @@ func TestRequestGameInstanceRejectsUnusableAddress(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			_, _, _, _, err := testMatchmaker(srv.URL).requestGameInstance("TM", "Highlands", "/Game/x", []string{"p1"}, 0)
+			_, _, _, _, err := testMatchmaker(srv.URL).requestGameInstance("TM", "Highlands", "/Game/x", []string{"p1"}, 0, 0, 0)
 			if err == nil {
 				t.Fatalf("want an error for %s, got nil", tc.name)
 			}
@@ -95,7 +96,7 @@ func TestRequestGameInstanceAcceptsUsableAddress(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ip, port, id, _, err := testMatchmaker(srv.URL).requestGameInstance("TM", "Highlands", "/Game/x", []string{"p1"}, 0)
+	ip, port, id, _, err := testMatchmaker(srv.URL).requestGameInstance("TM", "Highlands", "/Game/x", []string{"p1"}, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -121,5 +122,31 @@ func TestGameManagerRequestTimeoutFromEnv(t *testing.T) {
 	t.Setenv("DN_GAME_MGR_TIMEOUT", "not-a-duration")
 	if got := gameManagerRequestTimeout(); got != 30*time.Second {
 		t.Fatalf("garbage timeout = %v, want the 30s default", got)
+	}
+}
+
+// A team size set on the dashboard reaches the battle server as team_size
+// (and the player limit as max_players); otherwise neither is sent and the
+// host keeps its own.
+func TestRequestGameInstanceSendsTeamSize(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = map[string]any{}
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"ip":"127.0.0.1","port":7777,"instance_id":"i1","match_id":"m1"}`))
+	}))
+	defer srv.Close()
+	if _, _, _, _, err := testMatchmaker(srv.URL).requestGameInstance("TDM", "Gorge", "/Game/x", []string{"p1"}, 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["team_size"]; ok {
+		t.Errorf("team_size sent without a dashboard team size: %v", got)
+	}
+	if _, _, _, _, err := testMatchmaker(srv.URL).requestGameInstance("TDM", "Gorge", "/Game/x", []string{"p1"}, 0, 60, 120); err != nil {
+		t.Fatal(err)
+	}
+	if got["team_size"] != float64(60) || got["max_players"] != float64(120) {
+		t.Errorf("request %v, want team_size 60 and max_players 120", got)
 	}
 }

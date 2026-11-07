@@ -88,7 +88,7 @@ func (m *Matchmaker) backfill(gameMode string, tierMin, fleetType int) (int, err
 	}
 
 	pvp := matchTeam(runMode, 1) == 2
-	maxPlayers, _ := m.Sizing()
+	maxPlayers := m.MaxPlayersFor(gameMode) // per queue (switches.go)
 	placed := 0
 	for _, g := range groups {
 		var target *backfillMatch

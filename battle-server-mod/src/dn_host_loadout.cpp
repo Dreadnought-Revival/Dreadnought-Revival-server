@@ -859,7 +859,7 @@ struct FlownShips {
   char pid[80];
   char ids[512]; // comma-separated loadout ids
 };
-static FlownShips g_flown[64];
+static FlownShips g_flown[128];
 
 // The pid each controller had when its loadout was served. FIXED 2026-09-27:
 // the first live match (20:53 host) sent the eom stats and then reported
@@ -871,7 +871,7 @@ struct ControllerPID {
   void *pc;
   char pid[80];
 };
-static ControllerPID g_controllerPIDs[64];
+static ControllerPID g_controllerPIDs[128];
 
 static void RememberControllerPID(void *pc, const char *pid) {
   ControllerPID *slot = nullptr;
@@ -5149,7 +5149,7 @@ struct PlayerSeen {
   bool named;
   int lastTeamFix;
 };
-static PlayerSeen g_seen[64];
+static PlayerSeen g_seen[128];
 
 static PlayerSeen *SeenFor(void *pc) {
   PlayerSeen *freeSlot = nullptr;
@@ -5265,6 +5265,26 @@ static void FixTeam(uint8_t *pc, uint8_t *pri, PlayerSeen *seen) {
   seen->lastTeamFix = want;
 }
 
+// ?DNTeamSize=<n> from the host's command line (dn-dedicated adds it for a
+// team size set on mmogbrain's admin dashboard): each side is filled with
+// bots up to n, humans included. 0 = not set, keep the host's own size.
+static int HostTeamSizeOverride() {
+  static int s_size = -1;
+  if (s_size >= 0)
+    return s_size;
+  s_size = 0;
+  const wchar_t *cmd = GetCommandLineW();
+  const wchar_t *p = cmd ? wcsstr(cmd, L"DNTeamSize=") : nullptr;
+  if (p) {
+    int n = _wtoi(p + 11);
+    if (n >= 1 && n <= 60)
+      s_size = n;
+    Logf("team size: DNTeamSize=%d on the command line -> %d per side%s", n, s_size,
+         s_size ? "" : " (out of range 1..60, ignored)");
+  }
+  return s_size;
+}
+
 // Runs once a second on the game thread (HookGameModeTimer).
 static void PlayersTick(uint8_t *gm) {
   __try {
@@ -5304,16 +5324,33 @@ static void PlayersTick(uint8_t *gm) {
 
     // Humans take bot slots on their own team, in any mode with bots
     // (m_enableSpawnAI set): proving ground (all humans on team 1) and PvP.
+    //
+    // With ?DNTeamSize=<n> (a team size set on mmogbrain's admin dashboard,
+    // 2026-11-07) the host's own team size is replaced by it -- written to
+    // gm+0x97C, which 0x3678F0 copies into the bot targets at setup -- and
+    // BOTH sides are kept at n - humans every second, also a side with no
+    // humans, and also after a side's target fell to 0 (humans filled it),
+    // so bots come back when players leave. Without it, the host's size and
+    // the old rule (only sides with humans) stay as they were.
     if (IsReadable(gm + OFF_GM_ENABLE_SPAWN_AI, 1) && gm[OFF_GM_ENABLE_SPAWN_AI]) {
+      int forced = HostTeamSizeOverride();
+      if (forced > 0 && *(int32_t *)(gm + OFF_GM_TEAM_SIZE) != forced) {
+        Logf("team size: host %d -> %d per side (DNTeamSize from mmogbrain)", *(int32_t *)(gm + OFF_GM_TEAM_SIZE), forced);
+        *(int32_t *)(gm + OFF_GM_TEAM_SIZE) = forced;
+      }
       int size = *(int32_t *)(gm + OFF_GM_TEAM_SIZE);
+      static void *s_botsSetUp = nullptr; // the game mode whose bots 0x3678F0 has set up
       for (int team = 1; team <= 2; ++team) {
         int target = *(int32_t *)(gm + OFF_GM_AI_TARGET_T1 + (team - 1) * 4); // +0x980, +0x984
+        if (target > 0)
+          s_botsSetUp = gm;
         int want = size - humansOnTeam[team];
         if (want < 0)
           want = 0;
-        // target > 0: the bots have been set up (0x3678F0 ran); before that a
-        // call would fill early.
-        if (size > 0 && target > 0 && humansOnTeam[team] > 0 && target != want) {
+        // Bots set up (0x3678F0 ran; before that a call would fill early).
+        // The old rule reads that from target > 0, which a full side loses.
+        bool adjust = forced > 0 ? s_botsSetUp == gm : target > 0 && humansOnTeam[team] > 0;
+        if (size > 0 && adjust && target != want) {
           ((tSetTeamSizeAI)(g_base + RVA_SET_TEAM_SIZE_AI))(gm, team, want);
           Logf("bot balance: %d human(s) on team %d; team size %d -> team %d bots %d -> %d",
                humansOnTeam[team], team, size, team, target, want);
@@ -5410,7 +5447,7 @@ static void ClassTimeTick(uint8_t *gm) {
 #define SPEED_FLAG_UPS 2000.0f
 #define SPEED_BOT_FACTOR 1.5f
 #define SPEED_MIN_BOT_SAMPLES 20
-#define CHECK_SLOTS 64
+#define CHECK_SLOTS 128
 #define CHECK_CLASSES 21 // EYShipClass 0..20
 
 struct SpeedClassStat {
@@ -5726,7 +5763,7 @@ struct PendingEomTransition {
   uint8_t *pri;
   DWORD due;
 };
-static PendingEomTransition g_pendingEom[32];
+static PendingEomTransition g_pendingEom[128];
 
 // Personal stats page (the end-of-match "Player Stats" rows).
 //

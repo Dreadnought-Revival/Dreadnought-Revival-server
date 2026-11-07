@@ -52,7 +52,7 @@ func TestAdminModeSettings(t *testing.T) {
 
 	for body, want := range map[string]int{
 		`{"escalation_queue":"Nope"}`: http.StatusBadRequest,
-		`{"max_players":11}`:          http.StatusBadRequest,
+		`{"max_players":121}`:          http.StatusBadRequest, // two teams of MaxTeamSize
 		`{"max_players":0}`:           http.StatusBadRequest,
 		`{"max_wait_s":601}`:          http.StatusBadRequest,
 		`{"reset":["everything"]}`:    http.StatusBadRequest,
@@ -123,5 +123,79 @@ func TestAdminModeSettings(t *testing.T) {
 	}
 	if matchmaker.IsEscalationQueue("BC") {
 		t.Error("Escalation still on BC after switching it off")
+	}
+}
+
+// Team sizes per queue: today's limits by default, changed per mode, capped
+// by the overall players-per-match, stored and read back, reset.
+func TestAdminTeamSizes(t *testing.T) {
+	database := useTempMmogPlayerStateDB(t)
+	log := logrus.New()
+	mm := matchmaker.New(database, log, "http://127.0.0.1:1", "", 2)
+	mm.SetSizing(10, 60*time.Second)
+	old := activeMatchmaker
+	activeMatchmaker = mm
+	t.Cleanup(func() { activeMatchmaker = old })
+	for _, q := range []string{"TDM", "BC", "Havoc"} {
+		matchmaker.SetTeamSizeOverride(q, nil)
+	}
+	t.Cleanup(func() {
+		for _, q := range []string{"TDM", "BC", "Havoc"} {
+			matchmaker.SetTeamSizeOverride(q, nil)
+		}
+	})
+
+	// The defaults are what the queues took before (10-player cap; PvE and
+	// Havoc one team of 5).
+	for q, want := range map[string]int{"TDM": 10, "TE": 10, "BC": 10, "Onslaught": 10, "Havoc": 5, "PVE": 5} {
+		if got := mm.MaxPlayersFor(q); got != want {
+			t.Errorf("default max players for %s = %d, want %d", q, got, want)
+		}
+	}
+	if matchmaker.TeamsIn("TDM") != 2 || matchmaker.TeamsIn("BC") != 1 {
+		t.Fatal("team counts wrong")
+	}
+
+	r := adminTestRouter()
+	for body, want := range map[string]int{
+		`{"team_sizes":{"TDM":61}}`: http.StatusBadRequest,
+		`{"team_sizes":{"TDM":0}}`:  http.StatusBadRequest,
+		`{"team_sizes":{"Nope":5}}`: http.StatusBadRequest,
+		`{"max_players":121}`:        http.StatusBadRequest,
+	} {
+		if rec := adminPost(r, "/admin/api/modes", "test-admin-key", body); rec.Code != want {
+			t.Errorf("%s: %d, want %d", body, rec.Code, want)
+		}
+	}
+	if rec := adminPost(r, "/admin/api/modes", "test-admin-key", `{"team_sizes":{"TDM":8,"BC":3,"Havoc":4}}`); rec.Code != http.StatusOK {
+		t.Fatalf("save: %d %s", rec.Code, rec.Body.String())
+	}
+	// 8 a side is 16, but the overall cap is still 10.
+	if got := mm.MaxPlayersFor("TDM"); got != 10 {
+		t.Errorf("TDM 8 a side under a cap of 10: %d, want 10", got)
+	}
+	if rec := adminPost(r, "/admin/api/modes", "test-admin-key", `{"max_players":20}`); rec.Code != http.StatusOK {
+		t.Fatalf("cap 20: %d", rec.Code)
+	}
+	for q, want := range map[string]int{"TDM": 16, "BC": 3, "Havoc": 4, "TE": 10} {
+		if got := mm.MaxPlayersFor(q); got != want {
+			t.Errorf("max players for %s = %d, want %d", q, got, want)
+		}
+	}
+
+	// A restart reads them back.
+	for _, q := range []string{"TDM", "BC", "Havoc"} {
+		matchmaker.SetTeamSizeOverride(q, nil)
+	}
+	applyModeSettings(database, mm, log)
+	if n, set := matchmaker.TeamSizeFor("TDM"); n != 8 || !set {
+		t.Errorf("after a restart TDM team size %d (set %v), want 8", n, set)
+	}
+
+	if rec := adminPost(r, "/admin/api/modes", "test-admin-key", `{"team_sizes":{"TDM":null}}`); rec.Code != http.StatusOK {
+		t.Fatalf("reset: %d", rec.Code)
+	}
+	if n, set := matchmaker.TeamSizeFor("TDM"); n != 5 || set {
+		t.Errorf("after reset TDM team size %d (set %v), want default 5", n, set)
 	}
 }
