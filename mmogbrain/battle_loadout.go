@@ -35,8 +35,15 @@ func battleLoadoutHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	pid := normalizedPlayerStatePID(r.URL.Query().Get("pid"))
 	id := r.URL.Query().Get("id")
+	if pid != "" && id == "" && r.URL.Query().Get("flagship") != "" {
+		var ok bool
+		if id, ok = battleFlagshipID(pid, r.URL.Query().Get("match")); !ok {
+			http.Error(w, "no flagship for this player and match", http.StatusNotFound)
+			return
+		}
+	}
 	if pid == "" || id == "" {
-		http.Error(w, "pid and id are required", http.StatusBadRequest)
+		http.Error(w, "pid and id (or flagship=1) are required", http.StatusBadRequest)
 		return
 	}
 	loadout, ok := battleLoadoutFor(pid, id)
@@ -58,6 +65,61 @@ func battleLoadoutFor(pid, id string) (mmogShipLoadoutSeed, bool) {
 		}
 	}
 	return mmogShipLoadoutSeed{}, false
+}
+
+// battleFlagshipID is the client-facing id of the player's flagship in the
+// fleet the match is played with -- what the host spawns when the player
+// picked no ship before the drop (GET /battle/loadout?pid=&flagship=1&match=
+// <the host's -MatchID>). The game's own fallback does exactly that: its
+// spawn-loadout lookup 0x370970 (callers SpawnDefaultPawn's 0x3827D0 and
+// 0x382870), finding no active loadout, takes the flagship id from the
+// player's fleet object (*(PC+0x958): [+0x40]+0xAB0 -> +0x2B8, else +0x118),
+// looks it up in that fleet's ship list (0x346240) and activates it
+// (UYLoadoutManager::ActivateLoadout 0x336C90). A battle server never logs
+// the player in, so that list is empty there and the drop failed with
+// "SpawnDefaultPawn: Active Loadout not found" (operator 2026-11-08: a
+// player got a black screen; "normally the flagship should be auto picked").
+// The match's fleet is matches.fleet_type (by battle_match_id); the
+// flagship's own loadout slot picks LOADOUT A or B.
+func battleFlagshipID(pid, matchID string) (string, bool) {
+	database := currentMmogPlayerStateDB()
+	if database == nil {
+		return "", false
+	}
+	var fleetType int32
+	if err := database.QueryRow(`SELECT fleet_type FROM matches WHERE battle_match_id=? OR id=? LIMIT 1`,
+		matchID, matchID).Scan(&fleetType); err != nil || fleetType == 0 {
+		return "", false
+	}
+	var flagship mmogShipLoadoutSeed
+	var slot int32
+	found := false
+	for _, fleet := range mmogPlayerStateForPID(pid).fleets {
+		if fleet.fleetType == fleetType && len(fleet.shipLoadouts) > 0 {
+			idx := fleet.flagshipIndex()
+			if idx < 0 || int(idx) >= len(fleet.shipLoadouts) {
+				idx = 0
+			}
+			flagship, slot, found = fleet.shipLoadouts[idx], fleet.flagshipShipLoadoutSlot(), true
+			break
+		}
+	}
+	if !found {
+		return "", false
+	}
+	var fallback string
+	for _, loadout := range withLoadoutVariants(pid, ownedShipLoadoutsForPlayerData(mmogPlayerStateForPID(pid), pid)) {
+		if loadout.loadoutID() != flagship.loadoutID() {
+			continue
+		}
+		if loadout.variant == slot {
+			return loadout.entryID(), true
+		}
+		if loadout.variant == 0 {
+			fallback = loadout.entryID()
+		}
+	}
+	return fallback, fallback != ""
 }
 
 func formatBattleLoadout(id, pid string, loadout mmogShipLoadoutSeed) string {

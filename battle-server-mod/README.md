@@ -1895,3 +1895,18 @@ lacks its row.
 Smoke-tested with a stand-in `/battle/tune` (`DN_MMOG_HTTP`): values applied,
 the game parsed the patched JSON (no "Problem parsing" line), match
 InProgress. UNTESTED in a played match: damage actually changing.
+
+## Flagship when a player picks no ship (added 2026-11-08)
+
+The game's spawn-loadout lookup `0x370970` (`.pdata` `0x370970-0x370A1D`;
+callers `0x3827D0`, `0x382870`, the `SpawnDefaultPawn` paths) falls back to the
+player's flagship when no ship was picked: flagship id from the fleet object
+`*(PC+0x958)`, looked up in its fleet ship list, activated with
+`ActivateLoadout` (`0x336C90`). On a battle server that list is empty (the
+player never logs in there), so the drop failed with `SpawnDefaultPawn: Active
+Loadout not found` and the player stayed in orbit on a black screen. The mod
+hooks the lookup: when the game answers nothing for a player controller with a
+`DNPID`, it asks `GET /battle/loadout?pid=&flagship=1&match=<-MatchID>` for the
+flagship of the match's fleet (`matches.fleet_type`), registers it like a picked
+ship, activates it and returns it. Log lines: `flagship: <pid> picked no ship ->
+flagship <id> activated`, or why not.

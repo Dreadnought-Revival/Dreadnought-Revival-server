@@ -10549,6 +10549,79 @@ static void InstallSwitchedHook(const char *what, uintptr_t rva, void *detour,
 }
 
 // ---------------------------------------------------------------------------
+// The flagship when a player picked no ship (2026-11-08)
+//
+// Operator 2026-11-08: a player joined a Legendary TDM, picked no ship in
+// orbit and had a black screen until he left -- "normally the flagship
+// should be auto picked when you don't pick a ship". The game does that: the
+// spawn-loadout lookup 0x370970 (.pdata 0x370970-0x370A1D; its only callers
+// are the spawn paths 0x3827D0 and 0x382870 that feed SpawnDefaultPawn),
+// finding no active loadout on the player's loadout manager
+// (*(PC+0x958)+0x28, active +0x208), takes the flagship id from the fleet
+// object *(PC+0x958) ([+0x40]+0xAB0 -> +0x2B8, else +0x118; 0x345420),
+// looks it up in that object's fleet ship list (+0x30, 0x50-byte entries,
+// id at +0x20; 0x346240) and activates it (ActivateLoadout 0x336C90). A
+// battle server never logs the player in, so that list is empty: the host
+// logged "SpawnDefaultPawn: Active Loadout not found. Can't spawn" and "no
+// pawn selected in orbit", and the player stayed in orbit (host log
+// battle-20261108-222423: 7 such hosts that day).
+//
+// So: when the game's lookup answers nothing for a connected player, ask
+// mmogbrain for the flagship of this match's fleet (GET /battle/loadout?
+// pid=&flagship=1&match=<-MatchID>), register it the way a picked ship is
+// registered (RegisterPlayerLoadout), activate it, and return it. The game's
+// own answer always wins; nothing changes for a player who picked a ship.
+// ---------------------------------------------------------------------------
+
+#define RVA_SPAWN_LOADOUT_LOOKUP 0x370970
+typedef void *(__fastcall *tSpawnLoadoutLookup)(void *gameMode, void *pc);
+static tSpawnLoadoutLookup g_origSpawnLoadoutLookup = nullptr;
+
+static void *__fastcall HookSpawnLoadoutLookup(void *gameMode, void *pc) {
+  void *lo = g_origSpawnLoadoutLookup(gameMode, pc);
+  if (lo || !pc || !IsReadable(pc, sizeof(UObjectMin)) ||
+      !ClassChainContains((UObjectMin *)pc, "PlayerController"))
+    return lo; // bots (AI controllers) keep the game's answer
+  char pid[80];
+  if (!PlayerPIDForController((uint8_t *)pc, pid, sizeof(pid)))
+    return lo; // the host's own local player, or no DNPID
+  __try {
+    uint8_t *mgr = (uint8_t *)HavocLoadoutManager(pc);
+    if (!mgr || !IsReadable(mgr + OFF_LOADOUT_MGR_ACTIVE, 8)) {
+      Logf("flagship: %s picked no ship, and has no loadout manager -- not spawned", pid);
+      return lo;
+    }
+    char match[96], path[512], body[4096], idText[256];
+    MatchIDFromCommandLine(match, sizeof(match));
+    _snprintf_s(path, sizeof(path), _TRUNCATE, "/battle/loadout?pid=%s&flagship=1&match=%s", pid, match);
+    if (!HttpGetLoopback(path, body, sizeof(body)) || !FieldValue(body, "id", idText, sizeof(idText)) ||
+        !idText[0]) {
+      Logf("flagship: %s picked no ship; mmogbrain has no flagship for match %s -- not spawned", pid, match);
+      return lo;
+    }
+    static wchar_t idW[256];
+    MultiByteToWideChar(CP_UTF8, 0, idText, -1, idW, 256);
+    FNameMin id = {};
+    ((tFNameCtor)(g_base + RVA_FNAME_CTOR_WIDE))(&id, idW, 1 /* FNAME_Add */);
+    void *found = g_origFindLoadoutByID(mgr, (void **)&id, 0);
+    if (!found && RegisterPlayerLoadout(mgr, (void **)&id, idText))
+      found = g_origFindLoadoutByID(mgr, (void **)&id, 0);
+    if (!found) {
+      Logf("flagship: %s picked no ship; flagship %s could not be registered -- not spawned", pid, idText);
+      return lo;
+    }
+    ((tActivateLoadout)(g_base + RVA_ACTIVATE_LOADOUT))(mgr, found, 1);
+    lo = *(void **)(mgr + OFF_LOADOUT_MGR_ACTIVE);
+    Logf("flagship: %s picked no ship -> flagship %s %s", pid, idText,
+         lo == found ? "activated" : (lo ? "NOT activated (another loadout is active)" : "NOT activated"));
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("flagship: EXCEPTION for %s -- not spawned", pid);
+    return nullptr;
+  }
+  return lo;
+}
+
+// ---------------------------------------------------------------------------
 // Balancing on the battle server (2026-11-07, issue #16 step 2; mmogbrain
 // battle_tune.go).
 //
@@ -11090,6 +11163,8 @@ static DWORD WINAPI Startup(LPVOID) {
                       (void *)&HookWeaponGroupLoadRow, (void **)&g_origWeaponGroupLoadRow);
   InstallSwitchedHook("balancing (GetTableAsJSON, /battle/tune)", RVA_GET_TABLE_AS_JSON,
                       (void *)&HookGetTableAsJSON, (void **)&g_origGetTableAsJSON);
+  InstallSwitchedHook("flagship when no ship is picked (spawn loadout lookup)", RVA_SPAWN_LOADOUT_LOOKUP,
+                      (void *)&HookSpawnLoadoutLookup, (void **)&g_origSpawnLoadoutLookup);
   if (!SwitchOn("DN_HOST_NO_ONS_ABILITY_SLOTS", "dn_host_no_ons_ability_slots.txt"))
     InstallSwitchedHook("onslaught ability slots (NPC controller values)", RVA_NPC_APPLY_CONTROL_VALUES,
                         (void *)&HookNpcApplyControlValues, (void **)&g_origNpcApplyControlValues);
