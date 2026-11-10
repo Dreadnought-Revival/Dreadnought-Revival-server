@@ -14,7 +14,8 @@ package main
 //	new State 0  idle; with CancellingPlayerId/Name set, "Player %s canceled
 //	             match making!"
 //
-// So: the leader's YA_SquadEnterMatchmaking queues EVERY member as one party
+// So: the leader's YA_SquadEnterMatchmaking (only the leader's: a member's is
+// refused "not_squad_leader", operator 2026-11-10) queues EVERY member as one party
 // (queue_entries.party_id; the matchmaker places a party whole and on one
 // team) and pushes State 1 to all; a formed match pushes State 2; any
 // member's YA_LeaveMatchmaking, or a member leaving the squad, dequeues the
@@ -48,6 +49,14 @@ func (h *squadHub) enterSquadMatchmaking(playerPID string, payload []byte) []byt
 		h.mu.Unlock()
 		return buildSquadEnterMatchmakingReply("squad_not_in_waiting_state")
 	}
+	// Only the leader queues the squad (operator 2026-11-10). GUESS: the
+	// result string -- the client reads "ok" and "squad_not_in_waiting_state"
+	// (0x142A2B933) and logs anything else as the reason.
+	if sq.leader != pid {
+		h.mu.Unlock()
+		logrus.WithFields(logrus.Fields{"player": pid, "squad": sq.id, "leader": sq.leader}).Info("squad: queue refused -- not the leader")
+		return buildSquadEnterMatchmakingReply("not_squad_leader")
+	}
 	h.mu.Unlock()
 
 	// The same mode resolution as a solo queue (buildMmogEnterMatchmakingPayload).
@@ -69,7 +78,7 @@ func (h *squadHub) enterSquadMatchmaking(playerPID string, payload []byte) []byt
 	}
 
 	h.mu.Lock()
-	if sq = h.squadOf(pid); sq == nil || sq.state != 0 {
+	if sq = h.squadOf(pid); sq == nil || sq.state != 0 || sq.leader != pid {
 		h.mu.Unlock()
 		return buildSquadEnterMatchmakingReply("squad_not_in_waiting_state")
 	}

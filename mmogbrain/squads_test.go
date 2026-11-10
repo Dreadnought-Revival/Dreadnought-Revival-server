@@ -160,11 +160,18 @@ func queuedParty(t *testing.T, pid string) string {
 }
 
 // The leader queues the whole squad as one party; every member is pulled in
-// (State 1) and their connection starts watching for the match.
+// (State 1) and their connection starts watching for the match. A member who
+// is not the leader cannot queue it (operator 2026-11-10).
 func TestSquadQueuesTogether(t *testing.T) {
 	useTempMmogPlayerStateDB(t)
 	h, a, b := formTestSquad(t)
 	req := protocol.AppendStringField(nil, "GameType", "TDM")
+	if r := h.enterSquadMatchmaking(b, req); !squadField(r, "result", "not_squad_leader") {
+		t.Fatalf("a member queueing the squad: %q, want not_squad_leader", r)
+	}
+	if got := queuedParty(t, b); got != "" {
+		t.Fatalf("the member's attempt queued %q", got)
+	}
 	reply := h.enterSquadMatchmaking(a, req)
 	if !squadField(reply, "result", "ok") {
 		t.Fatalf("reply %q, want result=ok", reply)

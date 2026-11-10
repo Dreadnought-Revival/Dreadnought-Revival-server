@@ -42,6 +42,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
@@ -131,6 +132,48 @@ type socialPeer struct {
 	channels map[string]bool
 	status   string
 	message  string
+	// recent is when this player's last chat lines were sent, for the flood
+	// limit (chatFloodAllowed).
+	recent []time.Time
+}
+
+// Limits on what a player sends to others (2026-11-10 social audit). The
+// client's own input box bounds a line, but the socket takes any length, and
+// nothing stopped a flood. GUESS: the original service's limits (it ran
+// Community Sift) are unknown; these are generous for play.
+const (
+	maxChatMessageRunes   = 1000
+	maxStatusMessageRunes = 200
+	chatFloodWindow       = 5 * time.Second
+	chatFloodMax          = 8 // lines per window
+)
+
+// clampRunes cuts s to at most n runes.
+func clampRunes(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	r := []rune(s)
+	return string(r[:n])
+}
+
+// chatFloodAllowed records one chat line and reports whether the peer is
+// under the flood limit.
+func (p *socialPeer) chatFloodAllowed(now time.Time) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	kept := p.recent[:0]
+	for _, t := range p.recent {
+		if now.Sub(t) < chatFloodWindow {
+			kept = append(kept, t)
+		}
+	}
+	p.recent = kept
+	if len(p.recent) >= chatFloodMax {
+		return false
+	}
+	p.recent = append(p.recent, now)
+	return true
 }
 
 // socialPeerQueueDepth is how far a connection may fall behind before its

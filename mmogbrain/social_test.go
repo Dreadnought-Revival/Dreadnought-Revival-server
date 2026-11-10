@@ -565,3 +565,99 @@ func TestFriendStateIsBroadcastOnlineAndOffline(t *testing.T) {
 		t.Errorf("offline push: %s %v, want status 0", method, data)
 	}
 }
+
+// Social audit 2026-11-10: a line over the length limit or past the flood
+// limit is refused with an error the client shows; nothing is relayed.
+func TestChatLineLimits(t *testing.T) {
+	hub := socialTestHub(t)
+	sender, _ := socialTestPeer(t, hub, "player-a")
+	send := func(body string) map[string]any {
+		return handleChatMethod(socialRequest{
+			method: "chat.channel.message",
+			params: map[string]any{"channel": "dreadnought.global", "message": body},
+			peer:   sender, hub: hub,
+		})
+	}
+	long := make([]rune, maxChatMessageRunes+1)
+	for i := range long {
+		long[i] = 'x'
+	}
+	if res := send(string(long)); res["error"] != "message too long" {
+		t.Errorf("a %d-rune line = %v, want message too long", len(long), res)
+	}
+	for i := 0; i < chatFloodMax; i++ {
+		if res := send("hi"); res["status"] != "success" {
+			t.Fatalf("line %d refused: %v", i+1, res)
+		}
+	}
+	if res := send("hi"); res["error"] != "slow down" {
+		t.Errorf("line %d = %v, want slow down", chatFloodMax+1, res)
+	}
+	if !sender.chatFloodAllowed(time.Now().Add(chatFloodWindow)) {
+		t.Error("the flood limit did not lift after the window")
+	}
+}
+
+// The sender sees their own line from the echo even when the new connection
+// is not a member of the room it names (a reconnect keeps the client's match
+// room name).
+func TestChatSenderIsEchoedOutsideTheRoom(t *testing.T) {
+	hub := socialTestHub(t)
+	sender, senderRead := socialTestPeer(t, hub, "player-a")
+	go handleChatMethod(socialRequest{
+		method: "chat.channel.message",
+		params: map[string]any{"channel": "somematch.all", "message": "anyone?"},
+		peer:   sender, hub: hub,
+	})
+	method, params := readNotice(t, senderRead)
+	if method != "chat.channel.message" || params["message"] != "anyone?" {
+		t.Errorf("own echo = %v %v, want chat.channel.message anyone?", method, params["message"])
+	}
+}
+
+// A friend request to yourself is refused whatever id form the target uses.
+func TestFriendRequestToYourselfIsRefused(t *testing.T) {
+	hub := socialTestHub(t)
+	const me = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+	peer, _ := socialTestPeer(t, hub, me)
+	res := handlePresenceSocialMethod(socialRequest{
+		method: "presence.friends.add",
+		params: map[string]any{"pid": dashedPlayerGUID(me)},
+		peer:   peer, hub: hub,
+	})
+	if res["status"] != "error" {
+		t.Errorf("self request = %v, want an error", res)
+	}
+	if state, _ := hub.friendState(me, me); state != "" {
+		t.Errorf("a self row was stored: %q", state)
+	}
+}
+
+// A request to a player who ignores the requester is dropped silently: the
+// requester gets the ordinary success, the target neither a row nor a push.
+func TestIgnoredRequesterCannotFriend(t *testing.T) {
+	hub := socialTestHub(t)
+	a, _ := socialTestPeer(t, hub, "player-a")
+	b, bRead := socialTestPeer(t, hub, "player-b")
+	if err := hub.addIgnore(b.playerID, a.playerID); err != nil {
+		t.Fatal(err)
+	}
+	res := handlePresenceSocialMethod(socialRequest{
+		method: "presence.friends.add",
+		params: map[string]any{"pid": b.playerID},
+		peer:   a, hub: hub,
+	})
+	if res["status"] != "success" {
+		t.Errorf("request = %v, want the ordinary success", res)
+	}
+	if state, _ := hub.friendState(a.playerID, b.playerID); state != "" {
+		t.Errorf("a row was stored: %q", state)
+	}
+	done := make(chan struct{})
+	go func() { _, _ = bRead.ReadBytes('\n'); close(done) }()
+	select {
+	case <-done:
+		t.Error("the ignoring player was pushed something")
+	case <-time.After(300 * time.Millisecond):
+	}
+}

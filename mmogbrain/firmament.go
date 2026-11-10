@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"strings"
@@ -149,12 +150,62 @@ type rawByteLogger struct {
 }
 
 func (r *rawByteLogger) Write(p []byte) (int, error) {
+	// Debug, not Info (2026-11-10): at Info every byte a client sent -- its
+	// JWT in the auth frame, every chat line -- went into mmogbrain.log, which
+	// the operator shares for debugging.
 	r.log.WithFields(logrus.Fields{
 		"remote": r.remote,
 		"hex":    hex.EncodeToString(p),
 		"text":   string(p),
-	}).Info("firmament: raw bytes received")
+	}).Debug("firmament: raw bytes received")
 	return len(p), nil
+}
+
+// firmamentFrameLimit caps one inbound JSON frame. json.Decoder holds a whole
+// value in memory before it returns, so without a cap one connection could
+// make the server buffer gigabytes (2026-11-10 social audit). Nothing the
+// client sends comes near it: the largest live frame is a chat line.
+const firmamentFrameLimit = 64 << 10
+
+var errFirmamentFrameTooLarge = errors.New("firmament: frame larger than 64 KB")
+
+// frameLimitReader counts the bytes read since the last complete frame.
+type frameLimitReader struct {
+	r io.Reader
+	n int
+}
+
+func (f *frameLimitReader) Read(p []byte) (int, error) {
+	if f.n >= firmamentFrameLimit {
+		return 0, errFirmamentFrameTooLarge
+	}
+	if len(p) > firmamentFrameLimit-f.n {
+		p = p[:firmamentFrameLimit-f.n]
+	}
+	n, err := f.r.Read(p)
+	f.n += n
+	return n, err
+}
+
+func (f *frameLimitReader) reset() { f.n = 0 }
+
+// redactedAuthPayload is the auth frame for the log, without its token.
+func redactedAuthPayload(payload map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(payload))
+	for k, v := range payload {
+		out[k] = v
+	}
+	if params, ok := payload["params"].(map[string]interface{}); ok {
+		p := make(map[string]interface{}, len(params))
+		for k, v := range params {
+			if k == "token" || k == "refresh_token" {
+				v = "<redacted>"
+			}
+			p[k] = v
+		}
+		out["params"] = p
+	}
+	return out
 }
 
 // handleFirmamentConn performs the YFirmament handshake over raw TLS.
@@ -240,16 +291,18 @@ func handleFirmamentConn(log *logrus.Logger, conn net.Conn, secret []byte) {
 
 	// Tee-reader logs every raw byte received from the game for debugging.
 	rawLog := &rawByteLogger{log: log, remote: remote}
-	decoder := json.NewDecoder(io.TeeReader(conn, rawLog))
+	limited := &frameLimitReader{r: io.TeeReader(conn, rawLog)}
+	decoder := json.NewDecoder(limited)
 
 	var authRaw json.RawMessage
 	if err := decoder.Decode(&authRaw); err != nil {
 		log.WithError(err).WithField("remote", remote).Warn("firmament: read auth message failed")
 		return
 	}
+	limited.reset()
 	var authPayload map[string]interface{}
 	if json.Unmarshal(authRaw, &authPayload) == nil {
-		log.WithFields(logrus.Fields{"remote": remote, "payload": authPayload}).Info("firmament: received auth payload")
+		log.WithFields(logrus.Fields{"remote": remote, "payload": redactedAuthPayload(authPayload)}).Info("firmament: received auth payload")
 	} else {
 		log.WithFields(logrus.Fields{"remote": remote, "hex": hex.EncodeToString(authRaw)}).Info("firmament: received raw auth bytes")
 	}
@@ -433,6 +486,7 @@ func handleFirmamentConn(log *logrus.Logger, conn net.Conn, secret []byte) {
 			}
 			return
 		}
+		limited.reset()
 		var msg map[string]interface{}
 		if json.Unmarshal(msgRaw, &msg) != nil {
 			log.WithFields(logrus.Fields{"remote": remote, "hex": hex.EncodeToString(msgRaw)}).Info("firmament: non-JSON message")
@@ -456,12 +510,15 @@ func handleFirmamentConn(log *logrus.Logger, conn net.Conn, secret []byte) {
 			log.WithField("remote", remote).Info("firmament: sent pong reply")
 		case "presence.status.set", "presence.status.setmessage":
 			if params, _ := msg["params"].(map[string]interface{}); params != nil {
+				// Both are shown to the player's friends: bounded (the
+				// client's own status values are short words; GUESS: the
+				// original's message limit).
 				peer.mu.Lock()
-				if v, ok := params["status"].(string); ok && v != "" {
+				if v, ok := params["status"].(string); ok && v != "" && len(v) <= 32 {
 					peer.status = v
 				}
 				if v, ok := params["status_message"].(string); ok {
-					peer.message = v
+					peer.message = clampRunes(v, maxStatusMessageRunes)
 				}
 				peer.mu.Unlock()
 				if playerID != "" {

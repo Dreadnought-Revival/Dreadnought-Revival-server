@@ -22,6 +22,7 @@ import (
 	"sort"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // socialRequest is one decoded JSON-RPC call from a connected player.
@@ -275,21 +276,33 @@ func handleChatMethod(r socialRequest) map[string]any {
 		if body == "" {
 			return socialError("empty message")
 		}
+		if why := chatLineRefused(r.peer, body); why != "" {
+			return socialError(why)
+		}
 		persistMmogChatMessage(r.peer.playerID, name, body)
 		notice := chatMessageNotice(r.method, name, r.hub.presenceEntry(r.peer.playerID), body)
 		// Every copy carries the profanity filter's verdict; the sender's own
 		// copy also the warning when something was filtered (chat_filter.go).
 		others := withChatFilter(notice, body, false)
 		own := withChatFilter(notice, body, true)
+		echoed := false
 		for _, p := range r.hub.peersIn(name) {
 			if p == r.peer {
 				_ = p.send(own)
+				echoed = true
 				continue
 			}
 			if r.hub.ignores(p.playerID, r.peer.playerID) {
 				continue
 			}
 			_ = p.send(others)
+		}
+		// The sender sees their own line only from this echo. A client that
+		// reconnected keeps its match room's name while the new connection is
+		// not a member of it (match rooms are joined at the travel push): the
+		// others got the line, the sender saw nothing (2026-11-10 audit).
+		if !echoed {
+			_ = r.peer.send(own)
 		}
 		return socialOK(map[string]any{"channel": name})
 
@@ -311,6 +324,9 @@ func handleChatMethod(r socialRequest) map[string]any {
 		body := r.str("message", "content", "text", "body", "Message")
 		if target == "" || body == "" {
 			return socialError("whisper needs a recipient and a message")
+		}
+		if why := chatLineRefused(r.peer, body); why != "" {
+			return socialError(why)
 		}
 		notice := chatMessageNotice(r.method, "", r.hub.presenceEntry(r.peer.playerID), body)
 		if data, ok := notice["data"].(map[string]any); ok {
@@ -372,7 +388,10 @@ func handlePresenceSocialMethod(r socialRequest) map[string]any {
 		target := r.targetPlayer()
 		logrus.WithFields(logrus.Fields{"player": r.peer.playerID, "target": target, "params": paramKeys(r.params)}).
 			Info("social: friend request")
-		if target == "" || target == r.peer.playerID {
+		// Compared in one id form (2026-11-10): the target arrives as a dashed
+		// GUID and the peer is keyed undashed, so a player could friend
+		// themselves (their own entry is in every search result).
+		if target == "" || socialID(target) == socialID(r.peer.playerID) {
 			return socialError("a friend request needs another player")
 		}
 		// Only real players. FIXED 2026-09-28: requests to a player that does
@@ -383,6 +402,21 @@ func handlePresenceSocialMethod(r socialRequest) map[string]any {
 		// ever answer.
 		if !playerExists(target) {
 			return socialError("no such player")
+		}
+		// A player who ignores the requester gets no request (2026-11-10):
+		// stored nothing, told nobody, and the requester is answered as if it
+		// went through -- as for direct messages, telling them they are
+		// ignored is a harassment vector.
+		if r.hub.ignores(target, r.peer.playerID) {
+			logrus.WithFields(logrus.Fields{"player": r.peer.playerID, "target": socialID(target)}).
+				Info("social: friend request dropped -- the target ignores the requester")
+			return socialOK(map[string]any{
+				firmamentRootData: map[string]any{"notice": map[string]any{
+					"action": "presence.friends.add",
+					"status": "success",
+					"target": dashedPlayerGUID(socialID(target)),
+				}},
+			})
 		}
 		if err := r.hub.addFriend(r.peer.playerID, target); err != nil {
 			return socialError(err.Error())
@@ -484,6 +518,18 @@ func handlePresenceSocialMethod(r socialRequest) map[string]any {
 		return socialOK(nil)
 	}
 	return socialOK(nil)
+}
+
+// chatLineRefused is why a chat line is not relayed: too long, or the player
+// is flooding (see the limits in social.go). "" relays it.
+func chatLineRefused(peer *socialPeer, body string) string {
+	if utf8.RuneCountInString(body) > maxChatMessageRunes {
+		return "message too long"
+	}
+	if !peer.chatFloodAllowed(time.Now()) {
+		return "slow down"
+	}
+	return ""
 }
 
 // notifyFriendEvent pushes one of the four server-initiated friend methods to a
