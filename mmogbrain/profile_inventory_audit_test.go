@@ -186,8 +186,12 @@ func TestSaveDisplayInformationDoesNotRename(t *testing.T) {
 		}
 	}
 
-	// The captured request's own string (persistSavePlayerDisplayInformation).
-	const look = "GENDER_FEMALE;#iiS=872349703#iiH=872349769#iiHw=872349736#iiEw=872349700#iiMs=855572488#iiMt=855572501#iiMe=855572482#iiMn=855572504#bIam=0"
+	// A request as a stock client sent it on 2026-11-10 (request log).
+	// CHANGED 2026-11-10: this string had iiEw=872349700, a made-up value
+	// for the part the captured request in persistSavePlayerDisplayInformation
+	// elides; the client always exports iiEw as -1, and since the captain
+	// ownership check an item the account does not own is not stored.
+	const look = "GENDER_FEMALE;#iiS=872349703#iiH=872349769#iiHw=872349736#iiEw=-1#iiMs=855572488#iiMt=855572501#iiMe=855572482#iiMn=855572504#bIam=0"
 	save("disp", look, "DisplayName", "Server Admin")
 	name, disp := stored()
 	if name != "Pilot" {
@@ -401,5 +405,143 @@ func TestAddToFleetChecksOwnershipTierAndDuplicates(t *testing.T) {
 		if fleet.fleetType == legendary && seen[t5] != 1 {
 			t.Errorf("the Legendary fleet does not list the tier V ship")
 		}
+	}
+}
+
+// A captain wears only what the player owns. Until 2026-11-10 any sold
+// outfit or headwear id in "disp" was stored, and the appearance is shown to
+// every other player. A slot with an unowned item is put back -- to its
+// stored item, or the gender's default after a gender switch -- and the rest
+// of the save is kept (ownedCaptainDisplayInfo has the evidence that a stock
+// client never sends one).
+func TestCaptainSaveKeepsUnownedItemsOut(t *testing.T) {
+	database := useTempMmogPlayerStateDB(t)
+	mmogPlayerStateForPID(auditPID)
+	// Sold captain items the new account does not own: Body_Female_02, and
+	// the headwear CH_Attachment_Eyepatch02.
+	const outfit, eyepatch = 872349704, 872349739
+	owned := map[int32]bool{}
+	for _, id := range ownedVanityItemIDs(auditPID) {
+		owned[id] = true
+	}
+	if owned[outfit] || owned[eyepatch] {
+		t.Fatalf("the test needs two captain items a new account does not own (outfit owned %v, eyepatch owned %v)", owned[outfit], owned[eyepatch])
+	}
+	captain := func(gender, suit, headwear string) string {
+		head := map[string]string{"GENDER_MALE": "872349830", "GENDER_FEMALE": "872349769"}[gender]
+		return gender + ";#iiS=" + suit + "#iiH=" + head + "#iiHw=" + headwear +
+			"#iiEw=-1#iiMs=855572488#iiMt=855572501#iiMe=855572482#iiMn=855572504#bIam=0"
+	}
+	save := func(disp string) string {
+		t.Helper()
+		if err := persistMmogPlayerMutation(auditPID, "YA_SavePlayerDisplayInformation",
+			auditRequest("YA_SavePlayerDisplayInformation", "disp", disp)); err != nil {
+			t.Fatal(err)
+		}
+		var stored string
+		if err := database.QueryRow(`SELECT display_info FROM player_state WHERE user_id=?`, auditPID).Scan(&stored); err != nil {
+			t.Fatal(err)
+		}
+		return stored
+	}
+	outfitText, eyepatchText := strconv.Itoa(outfit), strconv.Itoa(eyepatch)
+
+	// A gender switch with an unowned outfit: the switch is kept, the outfit
+	// is the female default (the stored one is a male suit).
+	if got, want := save(captain("GENDER_FEMALE", outfitText, "872349736")), captain("GENDER_FEMALE", "872349703", "872349736"); got != want {
+		t.Errorf("gender switch with an unowned outfit:\n got %s\nwant %s", got, want)
+	}
+	// Same gender: both unowned slots keep what is stored.
+	if got, want := save(captain("GENDER_FEMALE", outfitText, eyepatchText)), captain("GENDER_FEMALE", "872349703", "872349736"); got != want {
+		t.Errorf("unowned outfit and headwear:\n got %s\nwant %s", got, want)
+	}
+	// Bought, it is worn; the headwear still is not.
+	if _, err := database.Exec(`INSERT INTO player_purchases(user_id,item_id,item_type,price_paid,currency) VALUES(?,?,'vanity',350,'gp')`, auditPID, outfit); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := save(captain("GENDER_FEMALE", outfitText, eyepatchText)), captain("GENDER_FEMALE", outfitText, "872349736"); got != want {
+		t.Errorf("bought outfit, unowned headwear:\n got %s\nwant %s", got, want)
+	}
+	// A captain stored before the check keeps the item it already wears (5 of
+	// the 168 live captains on 2026-11-10), also through a later save.
+	if _, err := database.Exec(`UPDATE player_state SET display_info=? WHERE user_id=?`, captain("GENDER_FEMALE", "872349703", eyepatchText), auditPID); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := save(captain("GENDER_FEMALE", outfitText, eyepatchText)), captain("GENDER_FEMALE", outfitText, eyepatchText); got != want {
+		t.Errorf("an item worn before the check:\n got %s\nwant %s", got, want)
+	}
+	// warn: stored as sent.
+	t.Setenv("DN_LOADOUT_OWNERSHIP", "warn")
+	if got, want := save(captain("GENDER_MALE", "872349708", eyepatchText)), captain("GENDER_MALE", "872349708", eyepatchText); got != want {
+		t.Errorf("warn mode:\n got %s\nwant %s", got, want)
+	}
+}
+
+// A balance is added to in SQL ("free_xp = free_xp + ?") in a 64-bit column,
+// while the wire and the Go side hold an int32. One value past 2147483647
+// failed the Scan of the whole row, and the player was then served a default
+// account at every login. The database now stops a balance at int32 (db.go,
+// the *_int32_* triggers), for a row changed and for a row created.
+func TestBalancePastInt32StopsAtInt32(t *testing.T) {
+	database := useTempMmogPlayerStateDB(t)
+	mmogPlayerStateForPID(auditPID)
+	const maxInt32 = 2147483647
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := database.Exec(query, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`UPDATE player_state SET display_name='Pilot', soft_currency=2147483000, free_xp=5 WHERE user_id=?`, auditPID)
+
+	// An earning the way battle results and claims add it.
+	exec(`UPDATE player_state SET soft_currency = soft_currency + ?, free_xp = free_xp + ? WHERE user_id=?`, 5000, 7, auditPID)
+	state, err := loadMmogPlayerState(auditPID)
+	if err != nil {
+		t.Fatalf("the player state no longer loads: %v", err)
+	}
+	if state.softCurrency != maxInt32 || state.freeXP != 12 || state.displayName != "Pilot" {
+		t.Errorf("after an earning past int32: credits %d (want %d), free XP %d (want 12), name %q (want Pilot)",
+			state.softCurrency, maxInt32, state.freeXP, state.displayName)
+	}
+
+	// Every summed column, set outright.
+	for _, column := range []string{"soft_currency", "premium_currency", "free_xp", "current_xp", "rank_xp"} {
+		exec(`UPDATE player_state SET `+column+`=3000000000 WHERE user_id=?`, auditPID)
+		var got int64
+		if err := database.QueryRow(`SELECT `+column+` FROM player_state WHERE user_id=?`, auditPID).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != maxInt32 {
+			t.Errorf("%s stored as %d, want %d", column, got, maxInt32)
+		}
+	}
+	if _, err := loadMmogPlayerState(auditPID); err != nil {
+		t.Errorf("the player state no longer loads: %v", err)
+	}
+
+	// A row created past int32 (an admin grant, a provisioned account).
+	const other = "0123456789abcdef0123456789abcdef"
+	exec(`INSERT INTO player_state(user_id,soft_currency,premium_currency,free_xp,current_xp,current_rank,rank_xp) VALUES(?,?,?,?,?,?,?)`,
+		other, int64(3000000000), 1, 2, 3, 4, 5)
+	var credits, gp int64
+	if err := database.QueryRow(`SELECT soft_currency, premium_currency FROM player_state WHERE user_id=?`, other).Scan(&credits, &gp); err != nil {
+		t.Fatal(err)
+	}
+	if credits != maxInt32 || gp != 1 {
+		t.Errorf("created row: credits %d (want %d), GP %d (want 1)", credits, maxInt32, gp)
+	}
+
+	// Ship XP: created, then added to the way a battle result does.
+	const ship = 12345
+	exec(`INSERT INTO player_ship_xp(user_id,ship_id,xp) VALUES(?,?,?)`, auditPID, ship, int64(3000000000))
+	if got := persistedPlayerShipXP(auditPID, ship); got != maxInt32 {
+		t.Errorf("ship XP created past int32 reads %d, want %d", got, maxInt32)
+	}
+	exec(`UPDATE player_ship_xp SET xp=100 WHERE user_id=? AND ship_id=?`, auditPID, ship)
+	exec(`INSERT INTO player_ship_xp(user_id,ship_id,xp) VALUES(?,?,?)
+		ON CONFLICT(user_id,ship_id) DO UPDATE SET xp=xp+excluded.xp`, auditPID, ship, int64(2147483647))
+	if got := persistedPlayerShipXP(auditPID, ship); got != maxInt32 {
+		t.Errorf("ship XP added past int32 reads %d, want %d", got, maxInt32)
 	}
 }

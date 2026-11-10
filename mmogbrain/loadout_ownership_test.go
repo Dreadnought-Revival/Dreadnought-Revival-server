@@ -76,7 +76,8 @@ func TestLoadoutOwnershipWarnsThenEnforces(t *testing.T) {
 	}
 
 	logs := captureWarnings(t)
-	send() // default mode: warn
+	t.Setenv("DN_LOADOUT_OWNERSHIP", "warn") // the default until 2026-11-10
+	send()
 	if storedWeaponPrimary(t, pid, starter.loadoutID()) != unownedWeapon {
 		t.Error("warn mode must still store the fit")
 	}
@@ -86,7 +87,7 @@ func TestLoadoutOwnershipWarnsThenEnforces(t *testing.T) {
 		}
 	}
 
-	t.Setenv("DN_LOADOUT_OWNERSHIP", "enforce")
+	t.Setenv("DN_LOADOUT_OWNERSHIP", "") // unset: enforce is the default
 	_, _ = currentMmogPlayerStateDB().Exec(`UPDATE player_ship_loadouts SET weapon_primary_id=?, display_info='' WHERE user_id=? AND loadout_id=?`,
 		starter.weaponPrimaryItemID(), pid, starter.loadoutID())
 	send()

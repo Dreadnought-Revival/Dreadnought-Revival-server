@@ -185,6 +185,13 @@ func normalizedCaptainDisplayInfo(displayInfo string) string {
 func mmogPlayerStateForPID(playerPID string) mmogPlayerState {
 	state, err := loadMmogPlayerState(playerPID)
 	if err != nil {
+		// A default account in place of the player's own is a hidden failure
+		// (new-account balances, starter fleet), so it is at least said: until
+		// 2026-11-10 this was silent. One known cause, a balance past int32
+		// failing the Scan, is closed in the database (db.go, the *_int32_*
+		// triggers).
+		logrus.WithError(err).WithField("player", normalizedPlayerStatePID(playerPID)).
+			Error("mmog: player state did not load; serving a default account")
 		return defaultMmogPlayerState(playerPID)
 	}
 	return state
@@ -932,6 +939,14 @@ func persistSavePlayerDisplayInformation(database *sql.DB, playerPID string, pay
 		return nil
 	}
 	displayInfo = normalizedCaptainDisplayInfo(displayInfo)
+	// Only what the player owns (loadout_ownership.go). The stored string is
+	// read first, and the row closed, before the ownership queries: one
+	// connection.
+	var stored string
+	if err := database.QueryRow(`SELECT display_info FROM player_state WHERE user_id=?`, playerPID).Scan(&stored); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("save player display information: read stored: %w", err)
+	}
+	displayInfo = ownedCaptainDisplayInfo(playerPID, stored, displayInfo)
 
 	if _, err := database.Exec(`UPDATE player_state SET display_info=?, updated_at=datetime('now') WHERE user_id=?`,
 		displayInfo, playerPID); err != nil {

@@ -115,3 +115,64 @@ func TestBattleLoadoutFlagship(t *testing.T) {
 		t.Errorf("no Legendary ships: %d, want 404", code)
 	}
 }
+
+// A picked ship must be of a tier the match's fleet holds. The host is told
+// only an id, so until 2026-11-10 any owned ship was handed out -- a tier I
+// ship in a Legendary match, or the reverse. The match comes from the host
+// (match=, the mod from that date) or, for an older mod, from the player's
+// slot in an active match. 403 and not 404: the mod spawns nothing for a 403.
+func TestBattleLoadoutRefusesShipOutsideTheMatchFleet(t *testing.T) {
+	database := useTempMmogPlayerStateDB(t)
+	const pid = "0123456789abcdef0123456789abcdef"
+	if err := seedMmogPlayerState(database, pid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO matches(id,game_mode,map,battle_match_id,fleet_type,status) VALUES
+		('m1','TDM','x','bm-recruit',1,'active'),('m2','TDM','x','bm-legend',3,'active'),('m3','TDM','x','',3,'ended')`); err != nil {
+		t.Fatal(err)
+	}
+	var ship mmogShipLoadoutSeed
+	for _, f := range mmogPlayerStateForPID(pid).fleets {
+		if f.fleetType == 1 && len(f.shipLoadouts) > 0 {
+			ship = f.shipLoadouts[0]
+		}
+	}
+	if tier, derived := shipTierForIDChecked(ship.loadoutID()); !derived || tier > 2 {
+		t.Fatalf("want a tier I/II starter ship, got loadout %d tier %d (derived %v)", ship.loadoutID(), tier, derived)
+	}
+	get := func(query string) int {
+		req := httptest.NewRequest(http.MethodGet, "/battle/loadout?pid="+pid+"&id="+ship.entryID()+query, nil)
+		req.RemoteAddr = "127.0.0.1:5000"
+		rec := httptest.NewRecorder()
+		battleLoadoutHandler(rec, req)
+		return rec.Code
+	}
+	// No match known (a host started by hand, or a match id nobody made):
+	// nothing to check against. The 'ended' row with an empty battle_match_id
+	// must not answer for a host that sent no id.
+	if code := get(""); code != http.StatusOK {
+		t.Errorf("no match: %d, want 200", code)
+	}
+	if code := get("&match=nope"); code != http.StatusOK {
+		t.Errorf("unknown match: %d, want 200", code)
+	}
+	if code := get("&match=bm-recruit"); code != http.StatusOK {
+		t.Errorf("Recruit ship in a Recruit match: %d, want 200", code)
+	}
+	if code := get("&match=bm-legend"); code != http.StatusForbidden {
+		t.Errorf("Recruit ship in a Legendary match: %d, want 403", code)
+	}
+	// An older mod names no match: the player's slot decides.
+	if _, err := database.Exec(`INSERT INTO match_slots(match_id,user_id,team) VALUES('m2',?,0)`, pid); err != nil {
+		t.Fatal(err)
+	}
+	if code := get(""); code != http.StatusForbidden {
+		t.Errorf("Recruit ship, slot in a Legendary match: %d, want 403", code)
+	}
+	if _, err := database.Exec(`UPDATE match_slots SET match_id='m1' WHERE user_id=?`, pid); err != nil {
+		t.Fatal(err)
+	}
+	if code := get(""); code != http.StatusOK {
+		t.Errorf("Recruit ship, slot in a Recruit match: %d, want 200", code)
+	}
+}

@@ -3,10 +3,12 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"unicode"
 
 	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/protocol"
+	"github.com/sirupsen/logrus"
 )
 
 // battleLoadoutHandler serves one player's loadout to the battle-server mod.
@@ -52,6 +54,12 @@ func battleLoadoutHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such loadout for this player", http.StatusNotFound)
 		return
 	}
+	if tier, fleetType, refused := battleLoadoutOutsideFleet(pid, r.URL.Query().Get("match"), loadout); refused {
+		logrus.WithFields(logrus.Fields{"player": pid, "loadout": id, "tier": tier, "fleet_type": fleetType}).
+			Warn("battle loadout: refused -- the ship's tier is not allowed in this match's fleet")
+		http.Error(w, "the ship's tier is not allowed in this match's fleet", http.StatusForbidden)
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte(formatBattleLoadout(id, pid, loadout)))
 }
@@ -66,6 +74,67 @@ func battleLoadoutFor(pid, id string) (mmogShipLoadoutSeed, bool) {
 		}
 	}
 	return mmogShipLoadoutSeed{}, false
+}
+
+// battleLoadoutOutsideFleet reports a ship whose tier the match's fleet does
+// not hold (FleetEligibility.AllowedTiers: Recruit I-II, Veteran II-III,
+// Legendary IV-V). A match is made per fleet type and the client offers only
+// that fleet's ships, but the host is told just an id
+// (ServerPlayerClickedShipLoadout) and until 2026-11-10 any ship the player
+// owned was handed out: a changed client could bring a tier V ship into a
+// Recruit match. Evidence that the stock client never does: every ship
+// picked in the 7 days of logs before the change (1,285 line ships and 194
+// heroes over 8 game modes, checked against battle_results.fleet_type) was
+// of a tier its match's fleet holds.
+//
+// The answer is 403, not 404: the mod (from the 2026-11-10 build) spawns
+// nothing for a 403, where a 404 falls back to that ship's default precast.
+// An older mod treats both the same, so the ship flies with the default fit
+// -- what it did before -- and nothing breaks in either order of deploy.
+//
+// Unknown is allowed: no match row (a host started by hand), a fleet type
+// with no eligibility row, or a ship whose tier cannot be derived.
+func battleLoadoutOutsideFleet(pid, matchID string, loadout mmogShipLoadoutSeed) (tier, fleetType int32, refused bool) {
+	fleetType, ok := battleMatchFleetType(pid, matchID)
+	if !ok {
+		return 0, 0, false
+	}
+	eligibility, ok := dreadFleetEligibilityByType(fleetType)
+	if !ok || len(eligibility.AllowedTiers) == 0 {
+		return 0, fleetType, false
+	}
+	tier, derived := shipTierForIDChecked(loadout.loadoutID())
+	if !derived {
+		return 0, fleetType, false
+	}
+	return tier, fleetType, !slices.Contains(eligibility.AllowedTiers, tier)
+}
+
+// battleMatchFleetType is the fleet type a match is played with
+// (matches.fleet_type): the match the host names (its -MatchID, which is the
+// battle_match_id, or the row id for a match made before that column), else
+// the active match the player holds a slot in -- a mod older than 2026-11-10
+// sends no match with a picked ship.
+func battleMatchFleetType(pid, matchID string) (int32, bool) {
+	database := currentMmogPlayerStateDB()
+	if database == nil {
+		return 0, false
+	}
+	var fleetType int32
+	var err error
+	if matchID != "" {
+		// Not for "": 114 older matches have an empty battle_match_id, and
+		// one of those would answer for every host that sent no id.
+		err = database.QueryRow(`SELECT fleet_type FROM matches WHERE battle_match_id=? OR id=? LIMIT 1`,
+			matchID, matchID).Scan(&fleetType)
+	} else {
+		err = database.QueryRow(`SELECT m.fleet_type FROM match_slots s JOIN matches m ON m.id=s.match_id
+			WHERE s.user_id=? AND m.status='active' ORDER BY s.joined_at DESC LIMIT 1`, pid).Scan(&fleetType)
+	}
+	if err != nil || fleetType == 0 {
+		return 0, false
+	}
+	return fleetType, true
 }
 
 // battleFlagshipID is the client-facing id of the player's flagship in the
@@ -83,13 +152,11 @@ func battleLoadoutFor(pid, id string) (mmogShipLoadoutSeed, bool) {
 // The match's fleet is matches.fleet_type (by battle_match_id); the
 // flagship's own loadout slot picks LOADOUT A or B.
 func battleFlagshipID(pid, matchID string) (string, bool) {
-	database := currentMmogPlayerStateDB()
-	if database == nil {
+	if matchID == "" {
 		return "", false
 	}
-	var fleetType int32
-	if err := database.QueryRow(`SELECT fleet_type FROM matches WHERE battle_match_id=? OR id=? LIMIT 1`,
-		matchID, matchID).Scan(&fleetType); err != nil || fleetType == 0 {
+	fleetType, ok := battleMatchFleetType(pid, matchID)
+	if !ok {
 		return "", false
 	}
 	var flagship mmogShipLoadoutSeed

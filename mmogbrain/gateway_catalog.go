@@ -614,6 +614,20 @@ func gatewayItemCatalogSeeds(playerID string) []gatewayCatalogEntitySeed {
 		starter[item.itemID] = item
 	}
 
+	// These entries DEFINE items (name, description, class, tier, price shown
+	// on a card); being listed here is not being for sale. In particular a
+	// weapon, ability or perk is listed in its shared form (middle byte 0xFF)
+	// with a credit price, and YA_PurchaseItem refuses that id ("not for
+	// sale", response_builders.go): a module is bought as its per-ship id,
+	// after research, through the research row's own path. That mismatch is
+	// deliberate (reviewed 2026-11-10) and not to be "fixed" from either side:
+	//   - dropping the entries removes definitions the client reads by id
+	//     (THEORY for which screens: not traced per entry; see
+	//     marketCatalogSellsCategory for the same caution);
+	//   - selling them is the hole closed on 2026-11-10 (any shared id for a
+	//     flat price, and a shared id passes the fitting check on every ship).
+	// No stock client has asked for one: every credit purchase stored on
+	// 2026-11-10 was a per-ship weapon/module id.
 	seeds := make([]gatewayCatalogEntitySeed, 0, len(marketItemLocalizationKeys))
 	emitted := map[int32]bool{}
 	for _, sourceID := range sortedMarketCatalogItemIDs() {

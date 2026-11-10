@@ -130,9 +130,10 @@ the fit up: its mmog `AutoLogin` (`0x2AABCB0`) is a stub and the fleet manager
 1. mmogbrain adds `?DNPID=<pid>` to the `YA_Connect` travel address; the host
    keeps the login URL at `UNetConnection+0x198` (verified live).
 2. On a loadout miss the mod asks mmogbrain
-   `GET http://127.0.0.1:8083/battle/loadout?pid=&id=` (loopback only;
-   `DN_MMOG_HTTP=host:port` overrides) for the record the client itself built
-   its loadout from.
+   `GET http://127.0.0.1:8083/battle/loadout?pid=&id=&match=<-MatchID>`
+   (loopback only; `DN_MMOG_HTTP=host:port` overrides; `match` is left out
+   when the host has no `-MatchID`) for the record the client itself built its
+   loadout from.
 3. It builds the loadout the way the client does (`HandleMmogbrainLoadoutAdded`,
    `0x348830`): `StaticConstructObject(UYShipLoadout)` -> `0x34D690(obj, owner+0x970, &info)`
    -> cached init data -> `AddLoadout(mgr, obj, 2)`.
@@ -140,6 +141,16 @@ the fit up: its mmog `AutoLogin` (`0x2AABCB0`) is a stub and the fleet manager
 It runs before any precast fallback (the client picks by the precast's name, so
 a registered default would shadow the fit). If mmogbrain has no record, the
 default precast is used as before.
+
+One answer is not a miss: **403** means the player owns the ship but its tier
+is not allowed in this match's fleet (mmogbrain `battleLoadoutOutsideFleet`,
+since 2026-11-10). Then nothing is registered -- no default precast either,
+which would spawn the same ship with its stock fit -- and the log says
+`player loadout: <id> for <pid> -- REFUSED by mmogbrain (tier not allowed in
+this match's fleet); no ship registered`. A stock client cannot get there: it
+is only shown the match fleet's ships, and all 1,479 picks in seven days of
+battle results were inside their match's tiers. What a refused client shows is
+not known (never produced; theory: it stays in ship selection).
 
 ```text
 [dn-host-loadout] player loadout: Default__VH_..._PrecastLoadout_BP_C for <pid> -> precast N, weapons a/b, abilities ... -> registered

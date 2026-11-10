@@ -390,6 +390,7 @@ Useful debug switches, all read by `mmogbrain`:
 |---|---|
 | `DN_TECHTREE_LIMIT` | Cap tech tree items per manufacturer group (for bisecting client-side load failures) |
 | `DN_ANSWER_DAILY_CONTRACTS` | `0` withholds the `YA_GetDailyContractsData` reply (answered by default since the quest catalogue fixed the hangar-entry recursion) |
+| `DN_LOADOUT_OWNERSHIP` | `enforce` (default since 2026-11-10): a loadout slot, ship look or captain slot holding an item the player does not own is not stored (the slot keeps what it had) and is logged (`loadout: unowned ...`, `captain: unowned item in the appearance`). `warn` stores it as sent and logs; `off` does not look |
 | `DN_NO_DEFER_PLAYER_FLEETS` | Answer `YA_PlayerFleets` immediately instead of after player data |
 | `DATA_DIR` | Override the location of the extracted game data |
 

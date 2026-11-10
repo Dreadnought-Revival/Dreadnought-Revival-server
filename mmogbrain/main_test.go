@@ -929,9 +929,19 @@ func TestMmogLoadoutMutationsPersistPerPlayer(t *testing.T) {
 	const playerB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	starter := starterShipLoadouts()[0]
 
+	// CHANGED 2026-11-10: the fitted weapon was the made-up id 123456789.
+	// Loadout ownership is enforced by default now (loadout_ownership.go), so
+	// the test fits something the player has: the ship's own secondary weapon,
+	// in the primary slot.
+	fitted := starter.weaponSecondaryItemID()
+	if fitted <= 0 || fitted == starter.weaponPrimaryItemID() {
+		t.Fatalf("starter ship has no distinct secondary weapon to fit (%d)", fitted)
+	}
+	fittedText := strconv.Itoa(int(fitted))
+
 	_ = buildMmogPlayerGetPayload(playerA)
 	mutation := protocol.AppendInt32Field(nil, "LoadoutID", starter.loadoutID())
-	mutation = protocol.AppendInt32Field(mutation, "weaponPrimary", 123456789)
+	mutation = protocol.AppendInt32Field(mutation, "weaponPrimary", fitted)
 	mutation = protocol.AppendStringField(mutation, "Name", "Persisted Test Loadout")
 	if err := persistMmogPlayerMutation(playerA, "YA_UpdateShipLoadout", mutation); err != nil {
 		t.Fatalf("persist update loadout: %v", err)
@@ -945,7 +955,7 @@ func TestMmogLoadoutMutationsPersistPerPlayer(t *testing.T) {
 	// int32SliceToStrings' doc comment in response_builders.go); this only
 	// affects our outgoing wire format, not the incoming mutation parser
 	// above, which still accepts int32 from the client.
-	if !bytes.Contains(playerAGet, protocol.AppendStringField(nil, "weaponPrimary", "123456789")) {
+	if !bytes.Contains(playerAGet, protocol.AppendStringField(nil, "weaponPrimary", fittedText)) {
 		t.Fatal("player A loadout mutation was not persisted")
 	}
 	if !bytes.Contains(playerAGet, protocol.AppendStringField(nil, "name", "Persisted Test Loadout")) {
@@ -953,7 +963,7 @@ func TestMmogLoadoutMutationsPersistPerPlayer(t *testing.T) {
 	}
 
 	playerBGet := buildMmogPlayerGetPayload(playerB)
-	if bytes.Contains(playerBGet, protocol.AppendInt32Field(nil, "weaponPrimary", 123456789)) {
+	if bytes.Contains(playerBGet, protocol.AppendStringField(nil, "weaponPrimary", fittedText)) {
 		t.Fatal("player B should not see player A loadout mutation")
 	}
 	if bytes.Contains(playerBGet, protocol.AppendStringField(nil, "name", "Persisted Test Loadout")) {

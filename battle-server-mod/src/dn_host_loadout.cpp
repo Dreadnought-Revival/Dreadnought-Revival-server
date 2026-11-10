@@ -931,8 +931,13 @@ static const char *FlownShipsFor(const char *pid) {
 // HttpGetLoopbackRaw fetches pathAndQuery into buf and returns where the body
 // starts and how long it is. Binary-safe: the body may contain NULs (the
 // scoring table is a binary mmog document).
+// The HTTP status of the last HttpGetLoopbackRaw answer, 0 when mmogbrain
+// gave none (unreachable, timed out). Game thread only, like the buffers.
+static int g_httpLastStatus = 0;
+
 static bool HttpGetLoopbackRaw(const char *pathAndQuery, char *buf, int bufLen,
                                const char **bodyOut, int *bodyLenOut) {
+  g_httpLastStatus = 0;
   static bool s_wsa = false;
   if (!s_wsa) {
     WSADATA wd;
@@ -979,7 +984,10 @@ static bool HttpGetLoopbackRaw(const char *pathAndQuery, char *buf, int bufLen,
     total += got;
   closesocket(s);
   buf[total] = 0;
-  if (total < 12 || strncmp(buf, "HTTP/1.", 7) != 0 || strncmp(buf + 9, "200", 3) != 0)
+  if (total < 12 || strncmp(buf, "HTTP/1.", 7) != 0)
+    return false;
+  g_httpLastStatus = atoi(buf + 9);
+  if (g_httpLastStatus != 200)
     return false;
   const char *b = strstr(buf, "\r\n\r\n");
   if (!b)
@@ -1029,16 +1037,36 @@ static int ParseInts(const char *csv, int32_t *out, int maxN) {
   return n;
 }
 
-static bool RegisterPlayerLoadout(void *mgr, void **id, const char *idText) {
+static bool MatchIDFromCommandLine(char *out, size_t outLen);
+
+// refused (optional): set when mmogbrain answered 403 -- the ship is the
+// player's but of a tier this match's fleet does not hold (a Recruit match
+// is tiers I-II; the stock client offers only the match fleet's ships, so
+// only a changed client asks). The caller then registers NO precast either:
+// the default precast of that same ship is what the fallback would spawn.
+// A 404 or no answer keeps the fallback, as before.
+static bool RegisterPlayerLoadout(void *mgr, void **id, const char *idText, bool *refused = nullptr) {
+  if (refused)
+    *refused = false;
   if (!idText)
     return false;
   char pid[80];
   if (!PlayerPIDForManager(mgr, pid, sizeof(pid)))
     return false; // not a connected player (e.g. the host's local player)
 
-  char path[512], body[4096];
-  _snprintf_s(path, sizeof(path), _TRUNCATE, "/battle/loadout?pid=%s&id=%s", pid, idText);
+  char path[512], body[4096], match[96];
+  if (MatchIDFromCommandLine(match, sizeof(match)))
+    _snprintf_s(path, sizeof(path), _TRUNCATE, "/battle/loadout?pid=%s&id=%s&match=%s", pid, idText, match);
+  else
+    _snprintf_s(path, sizeof(path), _TRUNCATE, "/battle/loadout?pid=%s&id=%s", pid, idText);
   if (!HttpGetLoopback(path, body, sizeof(body))) {
+    if (g_httpLastStatus == 403) {
+      Logf("player loadout: %s for %s -- REFUSED by mmogbrain (tier not allowed in this match's fleet); no ship registered",
+           idText, pid);
+      if (refused)
+        *refused = true;
+      return false;
+    }
     Logf("player loadout: %s for %s -- mmogbrain has no record (or unreachable); falling back to the default precast",
          idText, pid);
     return false;
@@ -1152,13 +1180,15 @@ static void *__fastcall HookFindLoadoutByID(void *mgr, void **id,
   // Order matters: the client picks by the precast's name, so the player's
   // own fit must be registered before any default precast could shadow it.
   void *retry = nullptr;
-  if (RegisterPlayerLoadout(mgr, id, wantText))
+  bool refused = false;
+  if (RegisterPlayerLoadout(mgr, id, wantText, &refused))
     retry = g_origFindLoadoutByID(mgr, id, 0);
   // Otherwise that ship's default precast, on demand...
-  if (!retry && RegisterPrecastOnDemand(mgr, wantText))
+  if (!retry && !refused && RegisterPrecastOnDemand(mgr, wantText))
     retry = g_origFindLoadoutByID(mgr, id, 0);
-  // ...and the original four-T1 set as the last resort.
-  if (!retry) {
+  // ...and the original four-T1 set as the last resort. Neither for a ship
+  // mmogbrain refused: the lookup stays a miss, as for an id nobody has.
+  if (!retry && !refused) {
     RegisterPrecastLoadouts(mgr);
     retry = g_origFindLoadoutByID(mgr, id, 0);
   }

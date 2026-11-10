@@ -572,6 +572,55 @@ var migrations = []string{
 		pm         TEXT NOT NULL DEFAULT '',
 		updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
+	// A balance stops at what the wire and the Go side hold: 2147483647
+	// (int32). The columns are 64-bit and every earning is added in SQL
+	// ("soft_currency = soft_currency + ?"), so nothing stopped a sum there;
+	// the first value past int32 failed the Scan of the whole player_state
+	// row, and the player was served a default account (player_state.go,
+	// loadMmogPlayerState) -- at every login, until the row was repaired by
+	// hand. Highest stored on 2026-11-10: free XP 705 million, credits and GP
+	// 224 million, so nobody has been there. One trigger per statement kind;
+	// SQLite does not re-fire a trigger from its own UPDATE
+	// (recursive_triggers is off), and the WHEN is false afterwards anyway.
+	`CREATE TRIGGER IF NOT EXISTS player_state_int32_update
+	AFTER UPDATE OF soft_currency, premium_currency, free_xp, current_xp, rank_xp ON player_state
+	WHEN NEW.soft_currency > 2147483647 OR NEW.premium_currency > 2147483647 OR NEW.free_xp > 2147483647
+		OR NEW.current_xp > 2147483647 OR NEW.rank_xp > 2147483647
+	BEGIN
+		UPDATE player_state SET
+			soft_currency = MIN(soft_currency, 2147483647),
+			premium_currency = MIN(premium_currency, 2147483647),
+			free_xp = MIN(free_xp, 2147483647),
+			current_xp = MIN(current_xp, 2147483647),
+			rank_xp = MIN(rank_xp, 2147483647)
+		WHERE user_id = NEW.user_id;
+	END`,
+	`CREATE TRIGGER IF NOT EXISTS player_state_int32_insert
+	AFTER INSERT ON player_state
+	WHEN NEW.soft_currency > 2147483647 OR NEW.premium_currency > 2147483647 OR NEW.free_xp > 2147483647
+		OR NEW.current_xp > 2147483647 OR NEW.rank_xp > 2147483647
+	BEGIN
+		UPDATE player_state SET
+			soft_currency = MIN(soft_currency, 2147483647),
+			premium_currency = MIN(premium_currency, 2147483647),
+			free_xp = MIN(free_xp, 2147483647),
+			current_xp = MIN(current_xp, 2147483647),
+			rank_xp = MIN(rank_xp, 2147483647)
+		WHERE user_id = NEW.user_id;
+	END`,
+	// The same for a ship's XP (highest stored 2026-11-10: 254,522).
+	`CREATE TRIGGER IF NOT EXISTS player_ship_xp_int32_update
+	AFTER UPDATE OF xp ON player_ship_xp
+	WHEN NEW.xp > 2147483647
+	BEGIN
+		UPDATE player_ship_xp SET xp = 2147483647 WHERE user_id = NEW.user_id AND ship_id = NEW.ship_id;
+	END`,
+	`CREATE TRIGGER IF NOT EXISTS player_ship_xp_int32_insert
+	AFTER INSERT ON player_ship_xp
+	WHEN NEW.xp > 2147483647
+	BEGIN
+		UPDATE player_ship_xp SET xp = 2147483647 WHERE user_id = NEW.user_id AND ship_id = NEW.ship_id;
+	END`,
 }
 
 func Open(path string) (*sql.DB, error) {
