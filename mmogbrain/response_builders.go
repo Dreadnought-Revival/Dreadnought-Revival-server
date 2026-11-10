@@ -6705,7 +6705,23 @@ func buildMmogPurchasePayload(requestName string, playerPID string, payload []by
 	if shipCategory == mmogItemCategoryShipLoadoutPrecast {
 		return reply("failed", "ships are claimed through research, not bought", 0, 0)
 	}
-	isHero := shipCategory == mmogItemCategoryShipLoadoutHero
+	_, isHero := heroByID(itemID)
+	// What is left to sell here is a hero ship or a sold cosmetic; bundles and
+	// researched weapons/modules were handled above. Until 2026-11-10 this
+	// path sold ANY other id for credits at purchasePriceForItem, whose
+	// fallback is a flat 1000: the shared (0xFF) form of a tier V module
+	// without researching it -- and owning the shared form passes the fitting
+	// check for every ship's copy (loadout_ownership.go) --, an officer
+	// briefing without its ship, a pawn id, an id that is no item at all
+	// (reproduced in TestPurchaseSellsOnlyWhatTheStoreOffers). The stock
+	// client buys none of those: every credit purchase in the live database
+	// on that day was a per-ship weapon/module, every GP purchase a hero or a
+	// cosmetic.
+	if isVanity, sold, _ := vanityOffer(itemID); !isHero && !(isVanity && sold) {
+		var balance int32
+		_ = database.QueryRow(`SELECT soft_currency FROM player_state WHERE user_id=?`, pid).Scan(&balance)
+		return reply("failed", "not for sale", 0, balance)
+	}
 	// Every purchasable item is owned once: player_purchases is keyed by
 	// (user_id, item_id) and the INSERT below is OR IGNORE, so quantity > 1
 	// charged N times and granted one item. It was also an exploit: the price

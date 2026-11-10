@@ -994,24 +994,38 @@ func TestMmogSavePlayerDisplayInformationPersistsForPlayersInformation(t *testin
 	}
 }
 
+// A save without a captain look changes nothing, and the player is served the
+// default look.
+//
+// CHANGED 2026-11-10: this sent only a "DisplayName" and expected the default
+// look to be WRITTEN to the row. A client-sent DisplayName is no longer read
+// (it renamed the account; see persistSavePlayerDisplayInformation), so such a
+// request is a no-op; the default comes from the read path, as it always did
+// for a player who never saved a captain.
 func TestMmogSavePlayerDisplayInformationFallsBackToDefaultDisplayInfo(t *testing.T) {
 	database := useTempMmogPlayerStateDB(t)
 	const playerPID = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-	const displayName = "OnlyName"
 
 	_ = buildMmogPlayerGetPayload(playerPID)
+	var nameBefore string
+	if err := database.QueryRow(`SELECT display_name FROM player_state WHERE user_id=?`, playerPID).Scan(&nameBefore); err != nil {
+		t.Fatalf("query display name: %v", err)
+	}
 
-	mutation := protocol.AppendStringField(nil, "DisplayName", displayName)
+	mutation := protocol.AppendStringField(nil, "DisplayName", "OnlyName")
 	if err := persistMmogPlayerMutation(playerPID, "YA_SavePlayerDisplayInformation", mutation); err != nil {
 		t.Fatalf("persist save player display information: %v", err)
 	}
 
-	var storedDisplayInfo string
-	if err := database.QueryRow(`SELECT display_info FROM player_state WHERE user_id=?`, playerPID).Scan(&storedDisplayInfo); err != nil {
+	var storedName string
+	if err := database.QueryRow(`SELECT display_name FROM player_state WHERE user_id=?`, playerPID).Scan(&storedName); err != nil {
 		t.Fatalf("query saved player display information: %v", err)
 	}
-	if storedDisplayInfo != defaultCaptainDisplayInfo {
-		t.Fatalf("stored display info = %q, want %q", storedDisplayInfo, defaultCaptainDisplayInfo)
+	if storedName != nameBefore {
+		t.Fatalf("display name = %q after a save carrying DisplayName, want it unchanged (%q)", storedName, nameBefore)
+	}
+	if served := mmogPlayerStateForPID(playerPID).displayInfo; served != defaultCaptainDisplayInfo {
+		t.Fatalf("served display info = %q, want %q", served, defaultCaptainDisplayInfo)
 	}
 }
 
@@ -1218,23 +1232,33 @@ func TestAliasResponsesEchoRequestRT(t *testing.T) {
 	}
 }
 
+// CHANGED 2026-11-10: this bought the Trafalgar's PAWN id through the SKU
+// "ship_trafalgar_184483981" for credits. A pawn was never for sale (the
+// shipped catalog has no YPawn SKU, see marketCatalogSellsCategory, and a hull
+// is claimed through research); it sold only because the purchase path sold
+// any id it could price. What the test is for -- an offer-shaped request, with
+// no ItemID, resolves to its item and is answered with a root "result" -- is
+// kept, with an offer the store does make: a hero ship, "999<id>", for GP.
 func TestPurchaseItemAcceptsClientOfferShape(t *testing.T) {
 	database := useTempMmogPlayerStateDB(t)
 	const playerPID = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 	if err := seedMmogPlayerState(database, playerPID); err != nil {
 		t.Fatalf("seed player state: %v", err)
 	}
-	// 20,000 used to cover a Trafalgar because the purchase path charged from a
-	// hand-written table (5,000) while the store advertised
-	// gatewayMarketCreditPrice. Those now agree, so a Tier 2 hull costs what the
-	// shelf says: 50,000. See purchasePriceForItem.
-	if _, err := database.Exec(`UPDATE player_state SET soft_currency=200000 WHERE user_id=?`, playerPID); err != nil {
+	if _, err := database.Exec(`UPDATE player_state SET premium_currency=50000000 WHERE user_id=?`, playerPID); err != nil {
 		t.Fatalf("seed currency: %v", err)
 	}
-	offer := extractedMarketItemExternalID(extractedShipIDTrafalgar, "")
+	var hero int32
+	for _, h := range heroShipLoadouts {
+		if _, havoc := havocUnlockThreshold(h.loadoutID); !havoc {
+			hero = h.loadoutID
+			break
+		}
+	}
+	offer := "999" + strconv.Itoa(int(hero)) // heroCatalogSeeds' externalID
 	request := protocol.AppendStringField(nil, "offer", offer)
 	request = protocol.AppendInt32Field(request, "quantity", 1)
-	request = protocol.AppendStringField(request, "currency", "CR")
+	request = protocol.AppendStringField(request, "currency", "SP_regular")
 	request = protocol.AppendStringField(request, "campaign", "")
 	request = protocol.AppendStringField(request, "priceId", "price_free")
 
@@ -1245,15 +1269,22 @@ func TestPurchaseItemAcceptsClientOfferShape(t *testing.T) {
 	if !bytes.Contains(purchase, protocol.AppendStringField(nil, "result", "bought")) {
 		t.Fatalf("offer-shaped purchase did not succeed: %x", purchase)
 	}
-	if !bytes.Contains(purchase, protocol.AppendStringField(nil, "itemID", strconv.Itoa(int(extractedShipIDTrafalgar)))) {
+	if !bytes.Contains(purchase, protocol.AppendStringField(nil, "itemID", strconv.Itoa(int(hero)))) {
 		t.Fatal("offer-shaped purchase did not resolve offer to itemID")
 	}
 	var count int
-	if err := database.QueryRow(`SELECT COUNT(*) FROM player_purchases WHERE user_id=? AND item_id=? AND currency='CR'`, playerPID, extractedShipIDTrafalgar).Scan(&count); err != nil {
+	if err := database.QueryRow(`SELECT COUNT(*) FROM player_purchases WHERE user_id=? AND item_id=? AND currency='SP_regular'`, playerPID, hero).Scan(&count); err != nil {
 		t.Fatalf("count purchases: %v", err)
 	}
 	if count != 1 {
 		t.Fatalf("persisted purchases = %d, want 1", count)
+	}
+
+	// The pawn SKU it used to buy is refused, and nothing is charged for it.
+	pawnOffer := protocol.AppendStringField(nil, "offer", extractedMarketItemExternalID(extractedShipIDTrafalgar, ""))
+	refused := buildMmogPurchasePayload("YA_PurchaseItem", playerPID, pawnOffer)
+	if !bytes.Contains(refused, protocol.AppendStringField(nil, "detailedResult", "not for sale")) {
+		t.Fatalf("a pawn id was not refused as not for sale: %x", refused)
 	}
 }
 
@@ -1268,19 +1299,14 @@ func TestPurchasedShipUpdatesTechTreeAndProgressionOwnership(t *testing.T) {
 	if err := seedMmogPlayerState(database, playerPID); err != nil {
 		t.Fatalf("seed player state: %v", err)
 	}
-	// See the note in TestPurchaseItemAcceptsClientOfferShape: the price a hull
-	// costs is now the price the store shows for it.
-	if _, err := database.Exec(`UPDATE player_state SET soft_currency=200000 WHERE user_id=?`, playerPID); err != nil {
-		t.Fatalf("seed currency: %v", err)
-	}
-
-	purchaseRequest := protocol.AppendInt32Field(nil, "ItemID", extractedShipIDTrafalgar)
-	// The client reads a ROOT string "result" and succeeds only on "bought"
-	// (reply branch 0x2A2CAE8, verified 2026-09-23); the old result-object with
-	// status "ok" is what logged "PurchaseResult: id: amount:0 result:".
-	purchase := buildMmogPurchasePayload("YA_BuyItem", playerPID, purchaseRequest)
-	if !bytes.Contains(purchase, protocol.AppendStringField(nil, "result", "bought")) {
-		t.Fatalf("purchase did not succeed: %x", purchase)
+	// CHANGED 2026-11-10: the row was made by BUYING the Trafalgar's pawn id
+	// for credits. A pawn is not for sale and that purchase is refused now
+	// (TestPurchaseSellsOnlyWhatTheStoreOffers); what this test pins is how
+	// the two replies report a ship row the player has a purchase row for,
+	// so the row is written directly.
+	if _, err := database.Exec(`INSERT INTO player_purchases(user_id,item_id,item_type,price_paid,currency) VALUES(?,?,?,?,?)`,
+		playerPID, extractedShipIDTrafalgar, "ship", 50000, mmogCurrencyCredits); err != nil {
+		t.Fatalf("seed purchase row: %v", err)
 	}
 
 	techTree := buildMmogTechTreePayload(playerPID)
@@ -3192,22 +3218,45 @@ func TestPurchasedItemTypeMatchesRealItemCategory(t *testing.T) {
 		t.Fatalf("seed currency: %v", err)
 	}
 
-	const weaponItemID int32 = 100597772 // Repeater Turrets, confirmed YWeapon in ItemIDTable.json
-	request := protocol.AppendInt32Field(nil, "ItemID", weaponItemID)
-	// The client reads a ROOT string "result" and succeeds only on "bought"
-	// (reply branch 0x2A2CAE8, verified 2026-09-23); the old result-object with
-	// status "ok" is what logged "PurchaseResult: id: amount:0 result:".
-	purchase := buildMmogPurchasePayload("YA_PurchaseItem", playerPID, request)
-	if !bytes.Contains(purchase, protocol.AppendStringField(nil, "result", "bought")) {
-		t.Fatalf("weapon purchase did not succeed: %x", purchase)
+	// CHANGED 2026-11-10: this bought the SHARED form of a weapon (100597772,
+	// Repeater Turrets, YWeapon in ItemIDTable.json) for credits, with no
+	// research. The shared form is not sold (a weapon is researched and then
+	// bought as its per-ship item); the type rule the test is about is
+	// checked on the function, and on a real research record.
+	const weaponItemID int32 = 100597772
+	if got := purchasedItemType(weaponItemID); got != "weapon" {
+		t.Fatalf("purchasedItemType(%d) = %q, want %q (must not default every purchase to ship)", weaponItemID, got, "weapon")
 	}
-
+	// A weapon on a hull the new player already has (a starter ship), so the
+	// hull prerequisite of research is met.
+	var perShipWeapon, cost int32
+	for _, item := range techTreeBaseItems() {
+		if _, ok := perShipResearchRow(item.id); !ok || (item.id>>24)&0xff != 5 {
+			continue
+		}
+		if _, missing := missingHullPrerequisite(playerPID, item.id); missing {
+			continue
+		}
+		perShipWeapon, cost = item.id, item.xpCost
+		break
+	}
+	if perShipWeapon == 0 {
+		t.Fatal("no per-ship weapon of a starter hull in the tech tree")
+	}
+	if _, err := database.Exec(`UPDATE player_state SET free_xp=? WHERE user_id=?`, cost, normalizedPlayerStatePID(playerPID)); err != nil {
+		t.Fatalf("seed free xp: %v", err)
+	}
+	unlock := protocol.AppendStringField(nil, "ItemID", strconv.Itoa(int(perShipWeapon)))
+	unlock = protocol.AppendStringField(unlock, "FreeXp", strconv.Itoa(int(cost)))
+	if err := persistMmogPlayerMutation(playerPID, "YA_UnlockItem", unlock); err != nil {
+		t.Fatalf("research: %v", err)
+	}
 	var itemType string
-	if err := database.QueryRow(`SELECT item_type FROM player_purchases WHERE user_id=? AND item_id=?`, normalizedPlayerStatePID(playerPID), weaponItemID).Scan(&itemType); err != nil {
-		t.Fatalf("query persisted item_type: %v", err)
+	if err := database.QueryRow(`SELECT item_type FROM player_purchases WHERE user_id=? AND item_id=?`, normalizedPlayerStatePID(playerPID), perShipWeapon).Scan(&itemType); err != nil {
+		t.Fatalf("query persisted item_type of %d: %v", perShipWeapon, err)
 	}
 	if itemType != "weapon" {
-		t.Fatalf("persisted item_type = %q, want %q (purchasedItemType must not default every purchase to ship)", itemType, "weapon")
+		t.Fatalf("persisted item_type = %q, want %q", itemType, "weapon")
 	}
 }
 

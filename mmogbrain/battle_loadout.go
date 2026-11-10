@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode"
 
 	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/protocol"
 )
@@ -130,17 +131,34 @@ func formatBattleLoadout(id, pid string, loadout mmogShipLoadoutSeed) string {
 		}
 		return strings.Join(parts, ",")
 	}
+	// One value per line, and the mod takes the FIRST line of each key
+	// (FieldValue, dn_host_loadout.cpp), so no text value may hold a line
+	// break: a loadout name that did wrote its own class/display/weapons/
+	// abilities/perks lines ahead of the real ones. Names and display strings
+	// are cleaned when saved (sanitizedLoadoutName, validDisplayInfo); this is
+	// for rows stored before that, and for the id, which is the request's.
 	var b strings.Builder
-	fmt.Fprintf(&b, "id=%s\n", id)
+	fmt.Fprintf(&b, "id=%s\n", battleLineValue(id))
 	fmt.Fprintf(&b, "pid=%s\n", pid)
 	fmt.Fprintf(&b, "precast=%d\n", loadout.precastLoadoutID)
-	fmt.Fprintf(&b, "name=%s\n", loadout.loadoutName)
+	fmt.Fprintf(&b, "name=%s\n", sanitizedLoadoutName(loadout.loadoutName))
 	fmt.Fprintf(&b, "class=%d\n", loadoutEYShipClass(loadout))
-	fmt.Fprintf(&b, "display=%s\n", loadout.displayInfo())
+	fmt.Fprintf(&b, "display=%s\n", battleLineValue(loadout.displayInfo()))
 	fmt.Fprintf(&b, "weapons=%s\n", ints(loadout.weaponPrimaryItemID(), loadout.weaponSecondaryItemID()))
 	fmt.Fprintf(&b, "abilities=%s\n", ints(loadout.abilityItemID(0), loadout.abilityItemID(1), loadout.abilityItemID(2), loadout.abilityItemID(3)))
 	fmt.Fprintf(&b, "perks=%s\n", ints(loadout.perkItemID(0), loadout.perkItemID(1), loadout.perkItemID(2), loadout.perkItemID(3)))
 	return b.String()
+}
+
+// battleLineValue is a text value as one line of a "key=value" reply to the
+// battle-server mod: control characters (line breaks above all) removed.
+func battleLineValue(value string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return -1
+		}
+		return r
+	}, value)
 }
 
 // battlePlayerHandler answers GET /battle/player?pid= with "name=<display
@@ -160,7 +178,7 @@ func battlePlayerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := mmogPlayerStateForPID(pid)
-	name := strings.TrimSpace(state.displayName)
+	name := strings.TrimSpace(battleLineValue(state.displayName))
 	if name == "" || name == "Local" {
 		http.Error(w, "no name for this player", http.StatusNotFound)
 		return

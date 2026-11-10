@@ -6,9 +6,12 @@ import (
 	"fmt"
 	dreadconfig "github.com/Dreadnought-Revival/Dreadnought-Revival-server/shared/dreadgameconfig"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/protocol"
 	"github.com/sirupsen/logrus"
@@ -432,12 +435,17 @@ func loadPersistedFleetLoadouts(database *sql.DB, playerPID string, fleetID int3
 	}()
 
 	var fleetLoadouts []mmogShipLoadoutSeed
+	listed := map[int32]bool{}
 	for rows.Next() {
 		var loadoutID int32
 		if err := rows.Scan(&loadoutID); err != nil {
 			return nil, fmt.Errorf("scan player_fleet_loadouts: %w", err)
 		}
-		if loadout, ok := loadouts[loadoutID]; ok {
+		// A ship is listed once, at its first place. persistAddToFleet stored
+		// a second add as a second row until 2026-11-10 (79 fleets had one);
+		// those rows stay in the table and are skipped here.
+		if loadout, ok := loadouts[loadoutID]; ok && !listed[loadoutID] {
+			listed[loadoutID] = true
 			loadout.position = int32(len(fleetLoadouts))
 			fleetLoadouts = append(fleetLoadouts, loadout)
 		}
@@ -902,25 +910,87 @@ func persistSavePlayerDisplayInformation(database *sql.DB, playerPID string, pay
 	// silently discarded and the account reverted to the default appearance.
 	// "DisplayInfo" is kept as a fallback: it is the name this server uses when
 	// it hands the same string back in other payloads.
-	displayInfo := firstMmogStringField(payload, "disp", "DisplayInfo")
-	displayName := firstMmogStringField(payload, "DisplayName", "displayName")
-
-	if displayInfo == "" && strings.TrimSpace(displayName) == "" {
+	//
+	// The request does NOT set the player's name. Until 2026-11-10 a
+	// "DisplayName" field in it was stored as the name, and the captured
+	// request above has no such field: a hand-built request could call the
+	// account anything ("Server Admin", another player's name) in chat, the
+	// friends list, the leaderboard, custom rooms and matches (reproduced in
+	// TestSaveDisplayInformationDoesNotRename). The name comes from the
+	// account at login and from an admin rename (player_rename.go).
+	displayInfo := strings.TrimSpace(firstMmogStringField(payload, "disp", "DisplayInfo"))
+	if displayInfo == "" {
 		return nil
 	}
-
-	if displayName == "" {
-		if err := database.QueryRow(`SELECT display_name FROM player_state WHERE user_id=?`, playerPID).Scan(&displayName); err != nil {
-			return fmt.Errorf("load existing display name: %w", err)
-		}
+	// The string is handed to every other client (YA_GetPlayersInformation,
+	// and the battle server replicates it), so it is kept to the characters
+	// the client's own string is made of: GENDER_x, then "#key=number" fields.
+	// All 172 stored captains on 2026-11-10 fit. 256 is the column's own limit.
+	if !validDisplayInfo(displayInfo, captainDisplayInfoChars) {
+		logrus.WithFields(logrus.Fields{"player": playerPID, "length": len(displayInfo)}).
+			Warn("mmog: YA_SavePlayerDisplayInformation refused -- not a captain display string")
+		return nil
 	}
 	displayInfo = normalizedCaptainDisplayInfo(displayInfo)
 
-	if _, err := database.Exec(`UPDATE player_state SET display_name=?, display_info=?, updated_at=datetime('now') WHERE user_id=?`,
-		displayName, displayInfo, playerPID); err != nil {
+	if _, err := database.Exec(`UPDATE player_state SET display_info=?, updated_at=datetime('now') WHERE user_id=?`,
+		displayInfo, playerPID); err != nil {
 		return fmt.Errorf("save player display information: %w", err)
 	}
 	return nil
+}
+
+// Characters a display string is made of, as the client writes it: a captain
+// is "GENDER_FEMALE;#iiS=872349703#...#bIam=0", a ship is item ids in ";"
+// groups joined by "#" (shared/dreadgameconfig/ship_vanity.go), -1 for an
+// empty slot.
+const (
+	captainDisplayInfoChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_;#=-"
+	shipDisplayInfoChars    = "0123456789;#-"
+	maxDisplayInfoLength    = 256
+	// GUESS: the client's own limit on a loadout name was not looked up. 64
+	// is a server bound, three times the longest stored name (21) on
+	// 2026-11-10; it exists so a name cannot be megabytes.
+	maxLoadoutNameRunes = 64
+)
+
+// validDisplayInfo reports whether a client-sent display string is short
+// enough and made only of the characters its format uses. These strings go to
+// other clients and, as "key=value" lines, to the battle server.
+func validDisplayInfo(displayInfo, allowed string) bool {
+	if len(displayInfo) > maxDisplayInfoLength {
+		return false
+	}
+	for i := 0; i < len(displayInfo); i++ {
+		if strings.IndexByte(allowed, displayInfo[i]) < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// sanitizedLoadoutName is a loadout name as it is stored: one line, no control
+// characters, at most maxLoadoutNameRunes long.
+//
+// The name is free text from the client and ends up in the battle server's
+// loadout record, which is "key=value" lines (formatBattleLoadout) of which
+// the mod takes the FIRST match per key. A name holding line breaks therefore
+// wrote its own class=, display=, weapons=, abilities= and perks= lines ahead
+// of the real ones: any fit in a match, whatever the player owns (reproduced
+// in TestLoadoutNameCannotInjectBattleLoadoutLines). No stored name had a
+// control character on 2026-11-10.
+func sanitizedLoadoutName(name string) string {
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' || r == utf8.RuneError {
+			return -1
+		}
+		return r
+	}, name)
+	name = strings.TrimSpace(name)
+	if runes := []rune(name); len(runes) > maxLoadoutNameRunes {
+		name = strings.TrimSpace(string(runes[:maxLoadoutNameRunes]))
+	}
+	return name
 }
 
 // persistUpdateShipLoadout stores a loadout the player edited in the hangar.
@@ -1017,16 +1087,22 @@ func persistUpdateShipLoadout(database *sql.DB, playerPID string, payload []byte
 	// understand it, it only has to survive the round trip so the ship the
 	// player built is the ship they get back. Format and consumers are in
 	// shared/dreadgameconfig/ship_vanity.go.
-	if displayInfo := strings.TrimSpace(firstMmogStringField(payload, "DisplayInfo", "displayInfo", "m_displayInfo")); displayInfo != "" &&
-		allowAppearance(mode, owned, playerPID, loadoutID, displayInfo) {
-		if err := update("display_info", displayInfo); err != nil {
-			return fmt.Errorf("update loadout display_info: %w", err)
+	if displayInfo := strings.TrimSpace(firstMmogStringField(payload, "DisplayInfo", "displayInfo", "m_displayInfo")); displayInfo != "" {
+		if !validDisplayInfo(displayInfo, shipDisplayInfoChars) {
+			// Not the client's format (item ids, ";" and "#"): it had no
+			// length limit and went to the battle server as a line of text.
+			logrus.WithFields(logrus.Fields{"player": playerPID, "loadout": loadoutID, "length": len(displayInfo)}).
+				Warn("loadout: ship appearance refused -- not a ship display string")
+		} else if allowAppearance(mode, owned, playerPID, loadoutID, displayInfo) {
+			if err := update("display_info", displayInfo); err != nil {
+				return fmt.Errorf("update loadout display_info: %w", err)
+			}
 		}
 	}
 
 	// The client also renames through this request, not only through
 	// YA_RenameShipLoadout.
-	if name := strings.TrimSpace(firstMmogStringField(payload, "Name", "name")); name != "" {
+	if name := sanitizedLoadoutName(firstMmogStringField(payload, "Name", "name")); name != "" {
 		if err := update("loadout_name", name); err != nil {
 			return fmt.Errorf("update loadout name: %w", err)
 		}
@@ -1036,8 +1112,8 @@ func persistUpdateShipLoadout(database *sql.DB, playerPID string, payload []byte
 
 func persistRenameShipLoadout(database *sql.DB, playerPID string, payload []byte) error {
 	loadoutID := firstMmogInt32Field(payload, "LoadoutID", "loadoutID", "precastLoadout")
-	name := firstMmogStringField(payload, "Name", "name", "LoadoutName", "loadoutName")
-	if loadoutID == 0 || strings.TrimSpace(name) == "" {
+	name := sanitizedLoadoutName(firstMmogStringField(payload, "Name", "name", "LoadoutName", "loadoutName"))
+	if loadoutID == 0 || name == "" {
 		return nil
 	}
 	if _, err := database.Exec(`UPDATE player_ship_loadouts SET loadout_name=?, updated_at=datetime('now') WHERE user_id=? AND loadout_id=?`, name, playerPID, loadoutID); err != nil {
@@ -1317,7 +1393,21 @@ func persistUnlockItem(database *sql.DB, playerPID string, payload []byte) error
 	// research could be had for 0; it must cover the tree's cost. The client
 	// offers exactly the XPCost it was sent (the captured request in
 	// realUnlockItemPayload offered 5000 when every cost was a flat 5000).
-	if cost, inTree := techTreeResearchCost(itemID); inTree && shipXP+freeXP < cost {
+	cost, inTree := techTreeResearchCost(itemID)
+	if !inTree {
+		// Research is for tech tree nodes only. Before 2026-11-10 an id outside
+		// the tree skipped the cost check and was recorded as OWNED for 0 XP:
+		// only categories 4/5/6 are "research only" (researchOnlyPurchase), so
+		// a hand-built unlock of a hero ship, a coating or an emblem handed it
+		// over free (reproduced in TestUnlockRefusesItemsOutsideTheTechTree).
+		// The stock client offers research from the tree it is sent: all 513
+		// distinct researched ids in the live database on that day were tree
+		// nodes, so this refuses nothing a player has done.
+		logrus.WithFields(logrus.Fields{"player": playerPID, "item_id": itemID}).
+			Warn("mmog: YA_UnlockItem refused -- not a tech tree item")
+		return nil
+	}
+	if shipXP+freeXP < cost {
 		logrus.WithFields(logrus.Fields{"player": playerPID, "item_id": itemID, "cost": cost,
 			"ship_xp": shipXP, "free_xp": freeXP}).
 			Warn("mmog: YA_UnlockItem refused -- offered XP below the tech tree cost")
@@ -1407,6 +1497,52 @@ func persistAddToFleet(database *sql.DB, playerPID string, payload []byte) error
 		return err
 	}
 	if loadoutID == 0 {
+		return nil
+	}
+	// The request is the client's, so it is checked against what the client's
+	// own fleet screen allows; until 2026-11-10 it was stored as sent
+	// (reproduced in TestAddToFleetChecksOwnershipTierAndDuplicates).
+	//
+	// 1. The ship is one of the player's. A "LoadoutID" field is taken as
+	// sent by fleetEditLoadoutID; an unowned one was stopped only by the
+	// table's foreign key, as a database error.
+	var owned int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM player_ship_loadouts WHERE user_id=? AND loadout_id=?`,
+		playerPID, loadoutID).Scan(&owned); err != nil {
+		return fmt.Errorf("add to fleet: check ship %d: %w", loadoutID, err)
+	}
+	if owned == 0 {
+		logrus.WithFields(logrus.Fields{"player": playerPID, "fleet": fleetID, "loadout": loadoutID}).
+			Warn("mmog: YA_AddToFleet refused -- not one of the player's ships")
+		return nil
+	}
+	// 2. The ship's tier belongs in that fleet (FleetEligibility.AllowedTiers:
+	// Recruit I-II, Veteran II-III, Legendary IV-V). A tier V ship in the
+	// Recruit fleet was accepted and served, and a match is made per fleet
+	// type. None of the 1688 stored fleet places broke the rule on 2026-11-10,
+	// so the client's screen already keeps it.
+	var fleetType int32
+	if err := database.QueryRow(`SELECT fleet_type FROM player_fleets WHERE user_id=? AND fleet_id=?`,
+		playerPID, fleetID).Scan(&fleetType); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("add to fleet: fleet %d: %w", fleetID, err)
+	}
+	if eligibility, ok := dreadFleetEligibilityByType(fleetType); ok {
+		if tier, derived := shipTierForIDChecked(loadoutID); derived && !slices.Contains(eligibility.AllowedTiers, tier) {
+			logrus.WithFields(logrus.Fields{"player": playerPID, "fleet_type": fleetType, "loadout": loadoutID, "tier": tier}).
+				Warn("mmog: YA_AddToFleet refused -- the ship's tier is not allowed in this fleet")
+			return nil
+		}
+	}
+	// 3. A ship is in a fleet once. The primary key includes the position, so
+	// the INSERT OR IGNORE below never ignored anything: 79 stored fleets held
+	// the same ship twice on 2026-11-10 (all of them hero ships, added twice
+	// by stock clients -- why the client sends it twice is not known).
+	var already int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM player_fleet_loadouts WHERE user_id=? AND fleet_id=? AND loadout_id=?`,
+		playerPID, fleetID, loadoutID).Scan(&already); err != nil {
+		return fmt.Errorf("add to fleet: check fleet %d: %w", fleetID, err)
+	}
+	if already > 0 {
 		return nil
 	}
 	var position int32
