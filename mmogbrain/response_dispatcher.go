@@ -157,12 +157,17 @@ func buildMmogRequestResponsePayload(requestName string, playerPID string, paylo
 	// --- Market / Purchases ---
 	case "YA_PurchaseItem", "YA_BuyItem", "YA_Purchase", "YA_Buy":
 		return buildMmogPurchasePayload(requestName, playerPID, payload)
-	case "YA_BuyEliteStatus", "YA_BuyDaypass", "YA_ActivateElite":
-		return buildMmogElitePurchasePayload(requestName, playerPID, payload)
+	// REMOVED 2026-11-09: "YA_BuyEliteStatus"/"YA_BuyDaypass"/"YA_ActivateElite"
+	// and "YA_ConvertXPToCredits"/"YA_ExchangeXP". None of the five names is in
+	// the client binary (no UTF-16 or ASCII occurrence), so no client ever
+	// sent them; they were reachable only by speaking the protocol directly
+	// with a token. The elite handler priced Duration*50 in int32, so a
+	// Duration of 42949673 made the price -2147483646 and the "deduction"
+	// ADDED 2.1 billion GP; the XP ones sold free XP for credits/GP at made-up
+	// rates. Elite membership is bought through the market bundles
+	// (grantMarketBundle); free XP is bought with GP through YA_ConvertShipXP.
 	case "YA_ConvertShipXP":
 		return buildMmogConvertShipXPPayload(playerPID, payload)
-	case "YA_ConvertXPToCredits", "YA_ExchangeXP":
-		return buildMmogXPConversionPayload(requestName, playerPID, payload)
 	// Daily contracts (daily_contracts.go): reroll and acknowledge, the only
 	// contract requests the client sends.
 	case "YA_ContractReplace":

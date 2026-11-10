@@ -323,6 +323,15 @@ func battleResultHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rewards := currentBattleRewards()
+	// The match's fleet tier, for the log line and the pools below.
+	// recordBattleResult resolves it again on its own copy of res; the
+	// handler's copy stayed 0, so the "battle result" line said fleet_type=0
+	// for every match (149 of 149 on 2026-11-09; the rows were right).
+	fleetType := 0
+	if database := currentMmogPlayerStateDB(); database != nil {
+		fleetType = matchFleetType(database, res.match)
+	}
+	res.fleetType = fleetType
 	var eventXP, eomXP int32
 	matchMode, _ := matchModeAndStart(currentMmogPlayerStateDB(), match)
 	scoringMode := scoringModeCode(matchMode)
@@ -391,11 +400,6 @@ func battleResultHandler(w http.ResponseWriter, r *http.Request) {
 	// writes these into the player's m_creditsInfo / m_matchXPInfo (the data
 	// the missing server build used to fill), so the screen shows what was
 	// paid. See rewardPools.
-	database := currentMmogPlayerStateDB()
-	fleetType := 0
-	if database != nil {
-		fleetType = matchFleetType(database, res.match)
-	}
 	creditPools, xpPools := rewards.poolsFor(res.outcome, res.kills, fleetType)
 	flown := flownFleetShipIDs(res.pid, res.ships)
 	shipPools := xpPools

@@ -1767,8 +1767,14 @@ static void __fastcall HookTdmKilled(void *gameMode, void *killer, void *victimC
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
   }
-  if (flagged)
-    ((uint8_t *)victimPawn)[OFF_PAWN_IS_AI_TARGET] = 0;
+  if (flagged) {
+    // The original may have destroyed the pawn (its memory stays until the
+    // GC runs, but it is not ours to assume); 2026-11-09.
+    __try {
+      ((uint8_t *)victimPawn)[OFF_PAWN_IS_AI_TARGET] = 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+  }
   __try {
     TeOnShipKilled(gameMode, victimCtrl, teVictimClass);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -5432,6 +5438,8 @@ static void ExtendBotList(uint8_t *gm, int size) {
        size, n, total, groups, *(int32_t *)(gm + OFF_GM_MAX_SPAWNS_PER_CLASS));
 }
 
+static void PruneDeparted(uint8_t **arr, int count);
+
 // Runs once a second on the game thread (HookGameModeTimer).
 static void PlayersTick(uint8_t *gm) {
   __try {
@@ -5444,6 +5452,7 @@ static void PlayersTick(uint8_t *gm) {
     int count = *(int32_t *)(gs + OFF_GS_PLAYER_ARRAY + 8);
     if (count <= 0 || count > 256 || !IsReadable(arr, (size_t)count * 8))
       return;
+    PruneDeparted(arr, count);
     int humans = 0;
     int humansOnTeam[3] = {0, 0, 0};
     for (int i = 0; i < count; ++i) {
@@ -5578,12 +5587,21 @@ static void ClassTimeTick(uint8_t *gm) {
 // the orbit teleport, a warp ability) and counted apart; otherwise the
 // sustained speed is the lowest of three consecutive samples, so one fast
 // second never counts. Ships have no top-speed field (UYVehicleMovementComp
-// moves them by forces: m_throttleForces / m_dragForces), so the yardstick is
-// the bots flying the same EYShipClass in the same match. Scale, from the
-// Conquest speed diagnostic (host logs 2026-10-29): AI ships average 20-500
-// units/s over 30 s. GUESS thresholds: flagged when a human's sustained
-// maximum exceeds 1.5 x the bots' of the class (with at least
-// SPEED_MIN_BOT_SAMPLES bot samples), or SPEED_FLAG_UPS outright.
+// moves them by forces: m_throttleForces / m_dragForces), so the bots flying
+// the same EYShipClass in the same match are reported beside the human for
+// scale. Scale, from the Conquest speed diagnostic (host logs 2026-10-29): AI
+// ships average 20-500 units/s over 30 s.
+//
+// What is FLAGGED, changed 2026-11-09. The first rules -- sustained above
+// 1.5 x the class's bots (20+ bot samples) or above 2000 units/s -- flagged
+// 267 of ~830 results in four days (32%): humans sustain up to 2999 units/s
+// in classes whose bots never pass 1410 (mobility abilities the bots do not
+// fly with; corvettes 2921 vs 1007), so neither rule separates anything.
+// Both figures are still reported; the flag is now the JUMP count: seconds
+// faster than SPEED_JUMP_UPS. A hacked ship moving faster than that moves
+// so every second, while the legitimate causes (respawn, orbit teleport,
+// warp) gave at most 69 in a match (the median match had 0). GUESS: the
+// SPEED_FLAG_JUMPS threshold; it is a measurement, not proof.
 //
 // Damage. Every hit goes through YPawn::TakeDamage (0x59BAF0, hooked for the
 // command ship gun log; float damage, FDamageEvent&, instigating controller,
@@ -5605,9 +5623,7 @@ static void ClassTimeTick(uint8_t *gm) {
 // is logged to test it). Only dealt is flagged since; received is reported
 // for the record.
 #define SPEED_JUMP_UPS 3000.0f
-#define SPEED_FLAG_UPS 2000.0f
-#define SPEED_BOT_FACTOR 1.5f
-#define SPEED_MIN_BOT_SAMPLES 20
+#define SPEED_FLAG_JUMPS 120 // seconds faster than SPEED_JUMP_UPS in one match
 #define CHECK_SLOTS 128
 #define CHECK_CLASSES 21 // EYShipClass 0..20
 
@@ -5848,12 +5864,11 @@ static void TakeFairPlayChecks(const char *pid, uint8_t *pc, uint8_t *pri, char 
   if (!(priRawTaken >= 0 && priRawTaken < 1e9f)) priRawTaken = 0;
   if (!(priShieldTaken >= 0 && priShieldTaken < 1e9f)) priShieldTaken = 0;
 
-  // Speed, per class flown: "class.sustained.fastest.bot_sustained.bot_samples".
+  // Speed, per class flown: "class.sustained.fastest.bot_sustained.bot_samples"
+  // (reported for the record; see the note above on why it is not flagged).
   char spd[CHECK_CLASSES * 40 + 8];
   size_t o = 0;
   spd[0] = 0;
-  bool speedFlag = false;
-  char speedWhy[160] = "";
   for (int c = 1; c < CHECK_CLASSES; ++c) {
     const SpeedClassStat &s = h.cls[c];
     if (!s.samples)
@@ -5861,14 +5876,12 @@ static void TakeFairPlayChecks(const char *pid, uint8_t *pc, uint8_t *pri, char 
     const SpeedClassStat &b = bots[c];
     o += _snprintf_s(spd + o, sizeof(spd) - o, _TRUNCATE, "%s%d.%d.%d.%d.%d", o ? "," : "", c, (int)s.max3,
                      (int)s.max1, (int)b.max3, b.samples);
-    bool overBots = b.samples >= SPEED_MIN_BOT_SAMPLES && b.max3 > 0 && s.max3 > SPEED_BOT_FACTOR * b.max3;
-    bool overAll = s.max3 > SPEED_FLAG_UPS;
-    if ((overBots || overAll) && !speedFlag) {
-      speedFlag = true;
-      _snprintf_s(speedWhy, sizeof(speedWhy), _TRUNCATE, "class %d sustained %.0f u/s vs bots %.0f (%d samples)",
-                  c, s.max3, b.max3, b.samples);
-    }
   }
+  bool speedFlag = h.jumps > SPEED_FLAG_JUMPS;
+  char speedWhy[160] = "";
+  if (speedFlag)
+    _snprintf_s(speedWhy, sizeof(speedWhy), _TRUNCATE, "%d seconds faster than %.0f u/s (largest %.0f units)",
+                h.jumps, (double)SPEED_JUMP_UPS, h.maxJump);
   // Damage: the player state's counters against what TakeDamage measured.
   auto disagree = [](double a, double b) {
     if (a < 10000 && b < 10000)
@@ -11022,6 +11035,68 @@ static void CeresOnShipKilled(void *victimPawn) {
     Logf("ceres: collector %p destroyed -- %s removed from %d ship(s) of team %d", victimPawn,
          NameText(*(FNameMin *)&feats[f]), removed, team);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Slots of players who left (2026-11-09)
+//
+// Every per-player table in this file is keyed by a controller or player-state
+// POINTER, and was cleared only when the player's match result was taken (the
+// Take* functions at the end of the match). A player who left mid-match kept
+// his slots, and the engine reuses freed actor memory: a controller or player
+// state created later at the same address would have inherited them -- the
+// leaver's scoring event counts and kills (XP, ribbons and contract kills paid
+// to the wrong player), his seconds per class and fair-play figures, a
+// controller marked "named" and team-synced although the new player was
+// neither, and in Havoc the leaver's bought boosts. Not observed in a log;
+// found by reading. So once a second (PlayersTick) every slot whose owner is
+// no longer in the GameState's PlayerArray is cleared, and the clearing is
+// logged. The result-time Take* calls are unaffected: a player at his end of
+// match is still in the array.
+static void PruneDeparted(uint8_t **arr, int count) {
+  auto present = [&](void *obj, bool asController) {
+    for (int i = 0; i < count; ++i) {
+      uint8_t *pri = arr[i];
+      if (!IsReadable(pri, OFF_ACTOR_OWNER + 8))
+        continue;
+      if (asController ? *(void **)(pri + OFF_ACTOR_OWNER) == obj : (void *)pri == obj)
+        return true;
+    }
+    return false;
+  };
+  for (auto &p : g_seen)
+    if (p.pc && !present(p.pc, true)) {
+      Logf("left: controller %p is no longer in the match -- its name/team slot cleared", p.pc);
+      p = PlayerSeen{};
+    }
+  for (auto &c : g_controllerPIDs)
+    if (c.pc && !present(c.pc, true))
+      c = ControllerPID{};
+  for (auto &p : g_hvcPlayers)
+    if (p.pc && !present(p.pc, true))
+      memset(&p, 0, sizeof p);
+  AcquireSRWLockExclusive(&g_checksLock);
+  for (auto &h : g_humanChecks)
+    if (h.pc && !present(h.pc, true))
+      h = HumanCheck{};
+  ReleaseSRWLockExclusive(&g_checksLock);
+  AcquireSRWLockExclusive(&g_eventTotalsLock);
+  for (auto &t : g_eventTotals)
+    if (t.pri && !present(t.pri, false)) {
+      Logf("left: player state %p is no longer in the match -- %d scoring event(s) dropped", t.pri, t.events);
+      t = EventTotals{};
+    }
+  ReleaseSRWLockExclusive(&g_eventTotalsLock);
+  AcquireSRWLockExclusive(&g_killLogLock);
+  for (auto &k : g_killLogs)
+    if (k.pri && !present(k.pri, false))
+      k = KillLog{};
+  ReleaseSRWLockExclusive(&g_killLogLock);
+  AcquireSRWLockExclusive(&g_classTimeLock);
+  for (auto &c : g_classTimes)
+    if (c.pri && !present(c.pri, false))
+      c = ClassTime{};
+  ReleaseSRWLockExclusive(&g_classTimeLock);
 }
 
 static DWORD WINAPI Startup(LPVOID) {

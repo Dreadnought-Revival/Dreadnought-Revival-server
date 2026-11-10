@@ -81,30 +81,42 @@ func TestStatsCounterResponseUsesStringIDs(t *testing.T) {
 // UYGoalManager::GetCurrentAmount reads the goal's amount straight out of the
 // dynamic career response, so this number is the goal's progress. It used to be
 // a constant zero, which meant no goal could ever advance.
+//
+// CHANGED 2026-11-09: a counter the server counts itself is no longer moved by
+// a client-reported counter of the same name -- any client could have
+// reported "MatchesWon" and completed the goal. Every configured goal is
+// server-counted. The client's own reports still count where they are the
+// evidence: its "FinishTutorial" counter (one of the two this client sends)
+// finishes GOAL_TUTORIAL.
 func TestCareerGoalProgressFollowsReportedCounters(t *testing.T) {
 	useTempMmogPlayerStateDB(t)
 	const playerPID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
-	var counterGoal careerGoal
 	for _, goal := range careerGoalsConfig() {
-		if goal.id != "UnlockAllModes" && goal.counterID != "" {
-			counterGoal = goal
-			break
+		if goal.id != "UnlockAllModes" && goal.counterID != "" && !serverCountsCareerCounter(goal.counterID) {
+			t.Errorf("%s counts %q from the client; a client could complete it", goal.id, goal.counterID)
 		}
 	}
-	if counterGoal.id == "" {
-		t.Fatal("no goal carries a counter id")
-	}
 
-	if got := careerGoalProgressForPlayer(playerPID, counterGoal.id); got != 0 {
-		t.Fatalf("a fresh player starts %s at %d, want 0", counterGoal.id, got)
+	if got := careerGoalProgressForPlayer(playerPID, "GOAL_TUTORIAL"); got != 0 {
+		t.Fatalf("a fresh player starts GOAL_TUTORIAL at %d, want 0", got)
 	}
+	// The goal's own counter name, reported by a client: the server counts
+	// this one, so the report changes nothing.
 	if err := persistMmogPlayerMutation(playerPID, "YA_IncrementPlayerStatsCounter",
-		realIncrementRequest(counterGoal.counterID, counterGoal.counterSubID, 4)); err != nil {
+		realIncrementRequest(counterTutorialFinished, "", 4)); err != nil {
 		t.Fatal(err)
 	}
-	if got := careerGoalProgressForPlayer(playerPID, counterGoal.id); got != 4 {
-		t.Errorf("%s = %d after the client reported 4, want 4", counterGoal.id, got)
+	if got := careerGoalProgressForPlayer(playerPID, "GOAL_TUTORIAL"); got != 0 {
+		t.Errorf("GOAL_TUTORIAL = %d after a client reported the server-counted %q, want 0", got, counterTutorialFinished)
+	}
+	// The client's real report.
+	if err := persistMmogPlayerMutation(playerPID, "YA_IncrementPlayerStatsCounter",
+		realIncrementRequest("FinishTutorial", "", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if got := careerGoalProgressForPlayer(playerPID, "GOAL_TUTORIAL"); got != 1 {
+		t.Errorf("GOAL_TUTORIAL = %d after the client reported FinishTutorial, want 1", got)
 	}
 
 	// UnlockAllModes stays satisfied regardless, or the client locks every mode.

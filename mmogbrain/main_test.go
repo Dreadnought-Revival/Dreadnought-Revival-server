@@ -3156,15 +3156,22 @@ func TestElitePurchasePersistsMembershipExpiry(t *testing.T) {
 		t.Fatalf("YA_PlayerGet before any purchase must omit Membership entirely, got payload=%x", before)
 	}
 
-	purchaseRequest := protocol.AppendInt32Field(nil, "Duration", 30)
-	purchase := buildMmogElitePurchasePayload("YA_BuyEliteStatus", playerPID, purchaseRequest)
-	purchaseResult := extractNamedMmogObject(t, purchase, "result")
-	if status := protocol.ExtractStringField(purchaseResult, fieldStatus); status != "ok" {
-		t.Fatalf("elite purchase status = %q, want ok (payload=%x)", status, purchase)
+	// Membership is granted by the market bundles (grantMarketBundle ->
+	// extendMembershipTx); the standalone YA_BuyEliteStatus handler was
+	// removed 2026-11-09 (response_dispatcher.go).
+	tx, err := database.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
 	}
-	purchaseExpiry, ok := protocol.ExtractInt32Field(purchaseResult, "ExpireTime")
-	if !ok || purchaseExpiry <= 0 {
-		t.Fatalf("elite purchase response ExpireTime = %d (ok=%v), want positive", purchaseExpiry, ok)
+	purchaseExpiry, err := extendMembershipTx(tx, playerPID, 30, int32(time.Now().Unix()))
+	if err != nil {
+		t.Fatalf("extend membership: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if purchaseExpiry <= 0 {
+		t.Fatalf("membership ExpireTime = %d, want positive", purchaseExpiry)
 	}
 
 	after := buildMmogPlayerGetPayload(playerPID)

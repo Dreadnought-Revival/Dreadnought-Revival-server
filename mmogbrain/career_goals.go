@@ -282,7 +282,16 @@ func careerGoalProgressForPlayer(playerPID string, goalID string) int32 {
 		if goal.id != goalID {
 			continue
 		}
-		// A counter the client reports wins: it is the client's own count.
+		// The server's own count wins wherever it has one (matches, kills,
+		// ships owned, ...). FIXED 2026-11-09: the client's counter won for
+		// EVERY name, so a client reporting YA_IncrementPlayerStatsCounter
+		// "MatchesWon"/"ShipsDestroyed" with a large increment would have
+		// completed those goals (not observed; the stored counters are only
+		// Customize and FinishTutorial). The client's counter is used for the
+		// names the server cannot count.
+		if serverCountsCareerCounter(goal.counterID) {
+			return careerCounterValue(playerPID, goal.counterID)
+		}
 		if value := playerStatsCounterValue(playerPID, goal.counterID, goal.counterSubID); value > 0 {
 			return value
 		}

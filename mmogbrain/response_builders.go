@@ -479,7 +479,10 @@ func stopEmptiedBattleServers(instanceIDs []string, pid string) {
 				entry.WithError(err).Warn("matchmaking: could not stop the battle server of a match left empty")
 				continue
 			}
-			entry.Warn("matchmaking: stopped the battle server of a match left empty by a queue leave")
+			// Info, not a warning: this is the normal end of every match. The
+			// client leaves the queue when it returns to the hangar, ~30 s
+			// after the result (143 of 143 matches on 2026-11-09).
+			entry.Info("matchmaking: stopped the battle server of a match left empty by a queue leave")
 		}
 	}()
 }
@@ -6872,162 +6875,6 @@ func itemIDFromPurchaseOffer(offer string) int32 {
 		}
 	}
 	return 0
-}
-
-func buildMmogElitePurchasePayload(requestName string, playerPID string, payload []byte) []byte {
-	durationDays := protocol.FirstInt32Field(payload, 30, "Duration", "duration", "Days", "days")
-	if durationDays <= 0 {
-		durationDays = 30
-	}
-	price := durationDays * 50
-
-	pid := normalizedPlayerStatePID(playerPID)
-	database := currentMmogPlayerStateDB()
-	if database == nil {
-		return buildMmogErrorPayload(requestName, "database unavailable")
-	}
-
-	var premiumCurrency int32
-	_ = database.QueryRow(`SELECT premium_currency FROM player_state WHERE user_id=?`, pid).Scan(&premiumCurrency)
-
-	// Currency deduction and membership extension must commit or fail
-	// together — otherwise a currency deduction that "succeeds" but is
-	// followed by a failed membership write would take the player's
-	// currency for nothing.
-	tx, err := database.Begin()
-	if err != nil {
-		return buildMmogErrorPayload(requestName, "database unavailable")
-	}
-	defer func() {
-		_ = tx.Rollback()
-	}()
-
-	// Atomic conditional deduction — see buildMmogPurchasePayload's comment
-	// for why a separate check-then-update is unsafe under concurrent
-	// requests.
-	result, err := tx.Exec(`UPDATE player_state SET premium_currency=premium_currency-?, updated_at=datetime('now') WHERE user_id=? AND premium_currency>=?`, price, pid, price)
-	if err != nil {
-		return buildMmogErrorPayload(requestName, "currency deduction failed")
-	}
-	if rows, _ := result.RowsAffected(); rows == 0 {
-		return buildMmogErrorPayload(requestName, "insufficient elite currency")
-	}
-
-	newExpiry, err := extendMembershipTx(tx, pid, durationDays, int32(time.Now().Unix()))
-	if err != nil {
-		return buildMmogErrorPayload(requestName, "membership persistence failed")
-	}
-	if err := tx.Commit(); err != nil {
-		return buildMmogErrorPayload(requestName, "commit failed")
-	}
-	pushMembershipChanged(pid)
-
-	var b []byte
-	var stack []int
-	b = protocol.AppendStringField(b, "RT", requestName)
-	b, stack = protocol.AppendObjectStart(b, stack, "result")
-	b = protocol.AppendStringField(b, fieldStatus, "ok")
-	b = protocol.AppendInt32Field(b, "eliteDays", durationDays)
-	b = protocol.AppendInt32Field(b, "premiumCurrency", premiumCurrency-price)
-	b = protocol.AppendInt32Field(b, "ExpireTime", newExpiry)
-	b, _ = protocol.AppendObjectEnd(b, stack)
-	return b
-}
-
-func buildMmogXPConversionPayload(requestName string, playerPID string, payload []byte) []byte {
-	xpAmount := protocol.FirstInt32Field(payload, 0, "XPAmount", "xpAmount", "xp", "XP")
-	if xpAmount <= 0 {
-		return buildMmogErrorPayload(requestName, "invalid XP amount")
-	}
-
-	convertTo := protocol.FirstNonEmptyString(payload, "convertTo", "ConvertTo", "currency", "Currency")
-	if convertTo == "" {
-		convertTo = "credits"
-	}
-
-	pid := normalizedPlayerStatePID(playerPID)
-	database := currentMmogPlayerStateDB()
-	if database == nil {
-		return buildMmogErrorPayload(requestName, "database unavailable")
-	}
-
-	var creditsGained, premiumCreditsGained int32
-	var success bool
-
-	if convertTo == "premium" || convertTo == "elite" {
-		premiumCreditsGained, success = convertXPToPremiumCredits(database, pid, xpAmount)
-		if !success {
-			return buildMmogErrorPayload(requestName, "XP conversion failed")
-		}
-	} else {
-		creditsGained, success = convertXPToCredits(database, pid, xpAmount)
-		if !success {
-			return buildMmogErrorPayload(requestName, "XP conversion failed")
-		}
-	}
-
-	var b []byte
-	var stack []int
-	b = protocol.AppendStringField(b, "RT", requestName)
-	b, stack = protocol.AppendObjectStart(b, stack, "result")
-	b = protocol.AppendStringField(b, fieldStatus, "ok")
-	b = protocol.AppendInt32Field(b, "xpConverted", xpAmount)
-	b = protocol.AppendInt32Field(b, "creditsGained", creditsGained)
-	b = protocol.AppendInt32Field(b, "premiumCreditsGained", premiumCreditsGained)
-	b, _ = protocol.AppendObjectEnd(b, stack)
-	return b
-}
-
-// Contract and XP conversion functions (moved from handlers package)
-
-func convertXPToCredits(db *sql.DB, pid string, xpAmount int32) (creditsGained int32, success bool) {
-	if xpAmount <= 0 {
-		return 0, false
-	}
-
-	// Calculate credits (10 XP = 1 credit)
-	creditsGained = xpAmount / 10
-	if creditsGained <= 0 {
-		return 0, false
-	}
-
-	// Atomic conditional deduction, guarded on free_xp>=xpAmount in the same
-	// UPDATE — see buildMmogPurchasePayload's comment for why a separate
-	// check-then-update is unsafe under concurrent requests.
-	result, err := db.Exec(`UPDATE player_state SET free_xp=free_xp-?, soft_currency=soft_currency+?, updated_at=datetime('now') WHERE user_id=? AND free_xp>=?`, xpAmount, creditsGained, pid, xpAmount)
-	if err != nil {
-		return 0, false
-	}
-	if rows, _ := result.RowsAffected(); rows == 0 {
-		return 0, false
-	}
-
-	return creditsGained, true
-}
-
-func convertXPToPremiumCredits(db *sql.DB, pid string, xpAmount int32) (premiumCreditsGained int32, success bool) {
-	if xpAmount <= 0 {
-		return 0, false
-	}
-
-	// Calculate premium credits (100 XP = 1 premium credit)
-	premiumCreditsGained = xpAmount / 100
-	if premiumCreditsGained <= 0 {
-		return 0, false
-	}
-
-	// Atomic conditional deduction, guarded on free_xp>=xpAmount in the same
-	// UPDATE — see buildMmogPurchasePayload's comment for why a separate
-	// check-then-update is unsafe under concurrent requests.
-	result, err := db.Exec(`UPDATE player_state SET free_xp=free_xp-?, premium_currency=premium_currency+?, updated_at=datetime('now') WHERE user_id=? AND free_xp>=?`, xpAmount, premiumCreditsGained, pid, xpAmount)
-	if err != nil {
-		return 0, false
-	}
-	if rows, _ := result.RowsAffected(); rows == 0 {
-		return 0, false
-	}
-
-	return premiumCreditsGained, true
 }
 
 type playerRibbon struct {

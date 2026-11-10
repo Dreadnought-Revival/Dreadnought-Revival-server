@@ -29,6 +29,21 @@ var careerModeCounters = map[string][]string{
 	counterConquestPlayed:  {"TER", "Territory"},
 }
 
+// serverCountsCareerCounter reports whether careerCounterValue has its own
+// count for the counter, i.e. one from this server's records rather than
+// from what the client reports.
+func serverCountsCareerCounter(counterID string) bool {
+	if _, ok := careerModeCounters[counterID]; ok {
+		return true
+	}
+	switch counterID {
+	case counterMatchesPlayed, counterMatchesWon, counterShipsDestroyed, counterTutorialFinished,
+		counterModulesResearched, counterContracts, counterT2Owned, counterT3Owned, counterT4Owned:
+		return true
+	}
+	return false
+}
+
 // careerCounterValue is the player's current amount for a goal counter.
 func careerCounterValue(playerPID, counterID string) int32 {
 	pid := normalizedPlayerStatePID(playerPID)
@@ -56,11 +71,15 @@ func careerCounterValue(playerPID, counterID string) int32 {
 	case counterMatchesPlayed, counterMatchesWon, counterShipsDestroyed:
 		return battleResultCounter(pid, counterID)
 	case counterTutorialFinished:
-		// The client reports the end of its tutorial (YA_AnalyticsTutorialSummaryEvent,
-		// stored by telemetry.go). GUESS: a player who has played a match is
-		// past the tutorial too (it can be skipped, and older accounts never
-		// reported it).
+		// The client reports the end of its tutorial twice over: the
+		// YA_AnalyticsTutorialSummaryEvent telemetry (telemetry.go) and its
+		// own "FinishTutorial" stats counter (YA_IncrementPlayerStatsCounter,
+		// one of the two counters this client sends -- 111 players had it on
+		// 2026-11-09). GUESS: a player who has played a match is past the
+		// tutorial too (it can be skipped, and older accounts never reported
+		// it).
 		if count(`SELECT COUNT(*) FROM client_telemetry WHERE user_id=? AND rt='YA_AnalyticsTutorialSummaryEvent'`, pid) > 0 ||
+			playerStatsCounterValue(pid, "FinishTutorial", "") > 0 ||
 			battleResultCounter(pid, counterMatchesPlayed) > 0 {
 			return 1
 		}

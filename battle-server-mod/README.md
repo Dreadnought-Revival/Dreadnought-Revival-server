@@ -1452,10 +1452,15 @@ a player.
   warp ability), counted apart. The **sustained** speed is the lowest of three
   samples in a row, so one fast second never counts. Ships have no top-speed
   field (`UYVehicleMovementComp` moves them by forces), so the yardstick is the
-  bots of the same EYShipClass in the same match. For scale, the Conquest speed
-  log showed AI ships averaging 20-500 units/s over 30 s. Flagged (GUESS
-  thresholds): sustained above 1.5x the bots' (with at least 20 bot samples),
-  or above 2000 units/s.
+  bots of the same EYShipClass in the same match, reported beside the human.
+  For scale, the Conquest speed log showed AI ships averaging 20-500 units/s
+  over 30 s. **Flag changed 2026-11-09**: the first rules (sustained above
+  1.5x the bots', or above 2000 units/s) flagged 267 of ~830 results in four
+  days -- humans legitimately sustain up to 2999 units/s in classes whose bots
+  never pass 1410, so the bots are no yardstick for a human with mobility
+  abilities. The flag is now the jump count: more than 120 seconds faster
+  than 3000 units/s in one match (GUESS threshold; legitimate matches showed
+  0-69, median 0). The speeds are still reported.
 - **Damage.** `YPawn::TakeDamage` (`0x59BAF0`) sums, per human, the damage the
   player dealt (instigator = the player's controller) and the damage the
   player's ship received, asked and dealt. At the match result these are set
@@ -1910,3 +1915,22 @@ hooks the lookup: when the game answers nothing for a player controller with a
 flagship of the match's fleet (`matches.fleet_type`), registers it like a picked
 ship, activates it and returns it. Log lines: `flagship: <pid> picked no ship ->
 flagship <id> activated`, or why not.
+
+## Slots of players who left (added 2026-11-09)
+
+Every per-player table in the mod is keyed by a controller or player-state
+pointer (names/teams, remembered DNPIDs, scoring event counts, kill detail,
+seconds per class, fair-play figures, Havoc boosts), and until now a slot was
+cleared only when the player's match result was taken. A player who left
+mid-match kept his slot, and the engine reuses freed actor memory, so a
+controller or player state created later at the same address would have
+inherited it: the leaver's event counts and kills (XP, ribbons and contract
+kills paid to the wrong player), his class time and fair-play figures, and a
+controller marked "named"/team-synced although the new player was neither.
+Found by reading the code (code audit), not observed in a log. `PruneDeparted`
+runs once a second from the players tick and clears every slot whose owner is
+no longer in the GameState's PlayerArray; the result-time `Take*` calls are
+unaffected (a player at his end of match is still in the array).
+
+Log: `left: controller … is no longer in the match -- its name/team slot
+cleared` and `left: player state … -- N scoring event(s) dropped`.

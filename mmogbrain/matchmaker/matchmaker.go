@@ -1326,9 +1326,12 @@ func (m *Matchmaker) requestGameInstance(gameMode, mapName, mapPath string, play
 // address before any client is told it. With PUBLIC_HOST set it is a DNS name,
 // and the game has twice refused names where it expects an address:
 // -GatewayAddress ("Invalid address: <name>") and /play/lkg's serverHost (a
-// stack overflow right after lkg, 2026-09-27). Whether TRAVEL resolves a name
-// is not verified, so it is never asked to. Resolved per match, so a changed
-// outside IP is picked up without a restart.
+// stack overflow right after lkg, 2026-09-27). TRAVEL does resolve a name:
+// on 2026-11-09 the resolver failed five times ("server misbehaving" /
+// timeouts) and the name went out as the connect address; every player
+// logged in to all five hosts. So the name is a working fallback, not a
+// failure -- the warning below marks the resolver, not the match. Resolved
+// per match, so a changed outside IP is picked up without a restart.
 func battleServerIPv4(host string, log *logrus.Logger) string {
 	if host == "" || net.ParseIP(host) != nil {
 		return host
