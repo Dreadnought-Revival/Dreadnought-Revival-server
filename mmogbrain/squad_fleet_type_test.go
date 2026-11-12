@@ -9,9 +9,17 @@ import (
 // The parser had no case for that tag, so FleetType read as absent and every
 // squad queued as Recruit -- the squad could never play Veteran or Legendary
 // (2026-10-02). The payload is a live capture of a Legendary queue.
+//
+// CHANGED 2026-11-11: both members now field a Legendary fleet with a ship.
+// The test used two accounts without one, which the queue has refused since
+// then ("invalid_fleet_type", TestSquadQueueNeedsEveryMembersFleet) -- the
+// live squad the capture is from had them.
 func TestSquadQueuesWithTheChosenFleet(t *testing.T) {
 	database := useTempMmogPlayerStateDB(t)
 	h, a, b := formTestSquad(t)
+	for _, p := range []string{a, b} {
+		fleetTestShip(t, p, 3, ownTestShip(t, p, 5))
+	}
 	req, err := hex.DecodeString("025254091800000059415f5371756164456e7465724d617463686d616b696e6709466c656574547970651603074d61704e616d650903000000414e590847616d6554797065090300000054444d000e00000000")
 	if err != nil {
 		t.Fatal(err)

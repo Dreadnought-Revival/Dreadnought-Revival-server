@@ -216,6 +216,7 @@ func TestMatchmakingErrorUsesAKnownReasonToken(t *testing.T) {
 	known := map[string]bool{
 		"invalid_version": true, "invalid_player": true, "invalid_fleet": true,
 		"invalid_gametype": true, "fleet_on_maintenance": true, "map_unavailable": true,
+		"empty_fleet": true, "already_in_room": true, "fleet_data_error": true,
 	}
 	payload := buildMmogMatchmakingErrorPayload("YA_EnterMatchmaking", 2, "invalid_gametype", "unsupported game mode")
 

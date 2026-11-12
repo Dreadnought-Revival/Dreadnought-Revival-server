@@ -238,6 +238,15 @@ func buildMmogRequestResponsePayload(requestName string, playerPID string, paylo
 		return buildMmogConnectPayload(playerPID)
 	case "YA_PlayerStateInHangar", "YA_UserLogout", "YA_ReconnectJoinChannels":
 		return buildMmogRequestSuccessPayload(requestName)
+	// YA_DisconnectClient is the client's goodbye: sender 0x2A18A00-0x2A18A6D
+	// writes only RT and "reason", and UUI_LoginGateScreen::ExitGame
+	// (0xAD9B90-0xAD9C86) calls it with "Exit from LoginGate screen" right
+	// before the game closes. strxref finds the name in that sender alone,
+	// never in the reply dispatcher, so nothing reads an answer. It fell to
+	// the default case: an "unknown MMOG request" warning and an error reply
+	// per exit (1-2 a day, 2026-11-12).
+	case "YA_DisconnectClient":
+		return buildMmogRequestSuccessPayload(requestName)
 	case "YA_UnlockItem":
 		return buildMmogUnlockItemPayload(playerPID, payload)
 	case "YA_ClaimItem":

@@ -2920,6 +2920,8 @@ func TestSafeNoopClientCallsReturnSuccess(t *testing.T) {
 		"YA_AnalyticsEndTransaction",
 		"YA_AnalyticsUpdateTransaction",
 		"YA_ReconnectJoinChannels",
+		// The goodbye the client sends as it exits (2026-11-12).
+		"YA_DisconnectClient",
 	} {
 		payload := buildMmogRequestResponsePayload(name, defaultMmogPlayerPID, nil)
 		if !bytes.Contains(payload, protocol.AppendStringField(nil, "RT", name)) {

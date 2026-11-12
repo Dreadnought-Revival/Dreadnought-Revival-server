@@ -20,7 +20,14 @@ package main
 // team) and pushes State 1 to all; a formed match pushes State 2; any
 // member's YA_LeaveMatchmaking, or a member leaving the squad, dequeues the
 // whole party and pushes State 0 naming them. The reply is read at the root:
-// result "ok", or "squad_not_in_waiting_state" (0x142A2B933).
+// result "ok", or "squad_not_in_waiting_state" (0x142A2B933), or
+// "invalid_fleet_type" -- OnSquadMatchmakingFailed (0x4BD280) shows the leader
+// "Matchmaking aborted / The selected fleet is not available for all squad
+// members". That one is sent when a member cannot field a fleet of the
+// squad's type (2026-11-11, see match_fleet.go): the State 1 lookup above
+// finds nothing on that member's client, which then stays on the fleet it
+// had -- a member without a Veteran fleet played a Veteran match on Recruit
+// ships.
 
 import (
 	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/matchmaker"
@@ -57,6 +64,8 @@ func (h *squadHub) enterSquadMatchmaking(playerPID string, payload []byte) []byt
 		logrus.WithFields(logrus.Fields{"player": pid, "squad": sq.id, "leader": sq.leader}).Info("squad: queue refused -- not the leader")
 		return buildSquadEnterMatchmakingReply("not_squad_leader")
 	}
+	squadID := sq.id
+	toCheck := append([]string(nil), sq.members...)
 	h.mu.Unlock()
 
 	// The same mode resolution as a solo queue (buildMmogEnterMatchmakingPayload).
@@ -77,12 +86,52 @@ func (h *squadHub) enterSquadMatchmaking(playerPID string, payload []byte) []byt
 		}
 	}
 
-	h.mu.Lock()
-	if sq = h.squadOf(pid); sq == nil || sq.state != 0 || sq.leader != pid {
+	// Every member, the leader included, must be able to field a fleet of
+	// the squad's type: one their client was sent, with a ship in it.
+	//
+	// GUESS: which members the original server refused. The client's text
+	// says "not available for all squad members", and a member whose client
+	// was not sent the fleet does nothing on State 1 (verified), so a locked
+	// fleet is certain to be meant. An EMPTY fleet is refused the same way:
+	// the member could pick no ship, and "invalid_fleet_type" is the only
+	// refusal the squad failure handler explains to the leader (any other
+	// string is only logged).
+	//
+	// The members' fleets are read without h.mu (player state has its own
+	// locks and the database one connection), so the squad is looked at
+	// again afterwards and whoever joined meanwhile is checked too.
+	checked := map[string]bool{}
+	var members []string
+	for attempt := 0; ; attempt++ {
+		for _, m := range toCheck {
+			if reason := queueFleetProblem(m, fleetType); reason != "" {
+				logrus.WithFields(logrus.Fields{"player": pid, "squad": squadID, "member": m,
+					"mode": gameMode, "fleet_type": fleetType, "reason": reason}).
+					Warn("squad: queue refused -- a member cannot field the squad's fleet type")
+				return buildSquadEnterMatchmakingReply("invalid_fleet_type")
+			}
+			checked[m] = true
+		}
+		h.mu.Lock()
+		if sq = h.squadOf(pid); sq == nil || sq.state != 0 || sq.leader != pid {
+			h.mu.Unlock()
+			return buildSquadEnterMatchmakingReply("squad_not_in_waiting_state")
+		}
+		members = append([]string(nil), sq.members...)
+		toCheck = nil
+		for _, m := range members {
+			if !checked[m] {
+				toCheck = append(toCheck, m)
+			}
+		}
+		if len(toCheck) == 0 {
+			break // h.mu stays held: nobody unchecked is queued
+		}
 		h.mu.Unlock()
-		return buildSquadEnterMatchmakingReply("squad_not_in_waiting_state")
+		if attempt >= 2 {
+			return buildSquadEnterMatchmakingReply("squad_not_in_waiting_state")
+		}
 	}
-	members := append([]string(nil), sq.members...)
 	if database != nil {
 		for _, m := range members {
 			_, _ = database.Exec(`DELETE FROM queue_entries WHERE user_id=? AND status='waiting'`, m)

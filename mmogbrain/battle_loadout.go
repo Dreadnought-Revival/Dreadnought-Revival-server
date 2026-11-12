@@ -228,8 +228,12 @@ func battleLineValue(value string) string {
 	}, value)
 }
 
-// battlePlayerHandler answers GET /battle/player?pid= with "name=<display
-// name>": the name battle-server-mod gives a joining player. Added 2026-09-28:
+// battlePlayerHandler answers GET /battle/player?pid=[&match=] with what
+// battle-server-mod needs to know about a joining player, one "key=value" a
+// line, each only when there is one: name, captain, fleet. 404 when there is
+// neither a name nor a fleet.
+//
+// name=<display name> is the name the host gives the player. Added 2026-09-28:
 // the host can only name players from their join URL, whose Name= the client
 // empties (UYGameEngine::Browse) and whose PlayerName= (dn-launcher's start
 // token) survives only the first match after the game starts -- a later
@@ -246,12 +250,27 @@ func battlePlayerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	state := mmogPlayerStateForPID(pid)
 	name := strings.TrimSpace(battleLineValue(state.displayName))
-	if name == "" || name == "Local" {
+	if name == "Local" {
+		name = ""
+	}
+	// fleet= is the id of the fleet the player fields in this match (match =
+	// the host's -MatchID; without it, the player's running match), in the
+	// form their client keys it by. The host sends it on as
+	// ClientSetActiveFleetId, which the original battle server did itself
+	// (match_fleet.go) -- ours has no fleet data, so each client fielded
+	// whatever fleet was selected in its hangar. Added 2026-11-11.
+	fleet, haveFleet := battleMatchFleetFID(pid, strings.TrimSpace(r.URL.Query().Get("match")))
+	if name == "" && !haveFleet {
 		http.Error(w, "no name for this player", http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = fmt.Fprintf(w, "name=%s\n", name)
+	if name != "" {
+		_, _ = fmt.Fprintf(w, "name=%s\n", name)
+	}
+	if haveFleet {
+		_, _ = fmt.Fprintf(w, "fleet=%s\n", fleet)
+	}
 	// captain= is the saved captain appearance (YA_SavePlayerDisplayInformation
 	// "disp", the same string YA_GetPlayersInformation returns as DisplayInfo).
 	// The host copies it into AYPlayerReplicationInfo::m_captainDisplayInformation

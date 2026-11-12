@@ -251,6 +251,9 @@ own loadout; with it off both players' fits registered. It is gone.
   with RepNotify, SDK), which the login-less host left empty, so other players'
   captains drew as the default. Not verified live: that the clients redraw the
   captain from the replicated value.
+- **Match fleet** (added 2026-11-11). `GET /battle/player` also answers
+  `fleet=<id>`, which the mod sends on as `ClientSetActiveFleetId`: see "The
+  match fleet on the client" below.
 
 Logs: `team sync: controller … TEAM=1 -- player state 0 -> 1, …`,
 `names: controller … is now "…" (from mmogbrain)`,
@@ -1945,3 +1948,60 @@ unaffected (a player at his end of match is still in the array).
 
 Log: `left: controller … is no longer in the match -- its name/team slot
 cleared` and `left: player state … -- N scoring event(s) dropped`.
+
+## The match fleet on the client: `ClientSetActiveFleetId` (added 2026-11-11)
+
+A client shows and spawns the ships of its *active* fleet. The original battle
+server told it which fleet that is for the match:
+`AYPlayerControllerBase::OnFleetInitializationComplete` (`.pdata`
+`0x5BCDC0-0x5BCE4E`, authority only) sends the client RPC
+`ClientSetActiveFleetId(FName)` (sender `0x5E5B40-0x5E5B7D`, FName global
+`0x3E102C0`) with the active fleet of the server's fleet manager. This host's
+fleet managers never initialise for a remote player (it performs no login), so
+nothing was sent and every client fielded whatever fleet was selected in its
+hangar. Seen live: a squad member without the squad's fleet type played a
+Veteran match on Recruit ships (rewards written for an empty fleet), and a solo
+player who had another fleet selected picked a tier III ship in a Recruit match
+(mmogbrain's first 403, 2026-11-11).
+
+Now `GET /battle/player?pid=&match=<-MatchID>` also answers `fleet=<id>`: the
+id the client was sent (`YA_PlayerFleets` `FID`) for its fleet of the match's
+fleet type (`matches.fleet_type`). The players tick sends the RPC with
+`FName(<that text>, FNAME_Add)`, which is how the client keys its fleets
+(`0x2A1D450`). mmogbrain's queue no longer lets a player in whose client has no
+such fleet (`invalid_fleet`, `empty_fleet`, and `invalid_fleet_type` for a
+squad), so a missing `fleet=` line should not happen for a queued player; the
+mod then sends nothing and says so.
+
+Sent three times per player (at join, +5 s, +20 s). The client's body
+(`0x5B0200-0x5B0224`) does nothing while the controller has no fleet manager
+(`PC+0x958`), and the client creates that in `InitDataManager`
+(`0x5BA4D0-0x5BA5CE`) only after its PlayerState has replicated, on another
+actor channel than the RPC. The store (`0x35AAD0`) is a plain write, so a
+repeat is harmless.
+
+With the match fleet active on the client, a pick outside it is what the
+original refused too (`SetActiveLoadout` `0x593980`: "Loadout [%s] is not
+valid. Loadout will not be set as active"); here that is mmogbrain's 403 (see
+"The player's own fit").
+
+Log lines:
+
+```text
+[dn-host-loadout] fleet: controller <pc> (pid <pid>) fields fleet <32 hex> in this match
+[dn-host-loadout] fleet: ClientSetActiveFleetId(<32 hex>) sent to controller <pc>, send 1/3
+[dn-host-loadout] fleet: mmogbrain named no match fleet for controller <pc> (pid <pid>); ClientSetActiveFleetId not sent
+```
+
+Checked on a smoke host (2026-11-11, temporary diagnostic, not in the
+source): the FName global resolves on a player controller to a UFunction of
+that name with flags `0x1020CC0` (`FUNC_Net | FUNC_NetReliable |
+FUNC_NetClient | FUNC_Native | FUNC_Event`), so the lookup cannot fail for a
+joining player and the call is a reliable client RPC.
+
+NOT verified live: that the ship selection follows the RPC. The native readers
+take the active fleet on demand (`GetActiveFleetId` `0x345420`, callers
+`0x4EB990`, `0x41E2A0`, `0x370970`, ...), but the selection widget is a
+Blueprint. The test: with the Veteran fleet selected in the hangar, join a
+squad whose leader queues Recruit; the ship selection must show the Recruit
+ships.

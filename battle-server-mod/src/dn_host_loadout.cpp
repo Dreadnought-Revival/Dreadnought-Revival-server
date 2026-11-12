@@ -5184,6 +5184,9 @@ struct PlayerSeen {
   void *pc;
   bool named;
   int lastTeamFix;
+  char fleet[33];   // the match fleet's id (/battle/player fleet=), "" = none
+  DWORD fleetSince; // GetTickCount() when it was learned
+  int fleetSends;   // ClientSetActiveFleetId sends so far
 };
 static PlayerSeen g_seen[128];
 
@@ -5199,6 +5202,9 @@ static PlayerSeen *SeenFor(void *pc) {
     freeSlot->pc = pc;
     freeSlot->named = false;
     freeSlot->lastTeamFix = -1;
+    freeSlot->fleet[0] = 0;
+    freeSlot->fleetSince = 0;
+    freeSlot->fleetSends = 0;
   }
   return freeSlot;
 }
@@ -5230,18 +5236,113 @@ static void SetCaptainDisplayInfo(uint8_t *pc, const char *body) {
   Logf("captain: player state %p +0x%x = \"%s\"", pri, OFF_PRI_CAPTAIN_DISPLAY, v);
 }
 
+// ---------------------------------------------------------------------------
+// The match fleet -> the client (ClientSetActiveFleetId), added 2026-11-11
+//
+// A client shows and spawns the ships of its ACTIVE fleet, and the original
+// battle server told it which fleet that is for the match:
+// AYPlayerControllerBase::OnFleetInitializationComplete (0x5BCDC0-0x5BCE4E,
+// authority only) sends the client RPC ClientSetActiveFleetId(FName) (sender
+// 0x5E5B40-0x5E5B7D: FindFunctionChecked(PC, FName global 0x3E102C0), then
+// ProcessEvent with the FName as the only parameter) with the active fleet of
+// the server's fleet manager. This host's fleet managers never initialise for
+// a remote player (no login), so the RPC was never sent and each client
+// fielded whatever fleet was selected in its hangar: a squad member without
+// the squad's fleet type played on another fleet, and a player who changed
+// fleet while queued picked ships of the wrong tiers (first seen 2026-11-11,
+// mmogbrain's 403 for the pick).
+//
+// mmogbrain names the fleet (/battle/player "fleet=": the FID the client was
+// sent for its fleet of the match's fleet type), and the mod sends the RPC.
+// The parameter is FName(<FID text>, FNAME_Add): the client keys its fleets
+// by exactly that (0x2A1D450).
+//
+// Sent three times (at join, +5 s, +20 s): the client's body (0x5B0200-
+// 0x5B0224) is a silent no-op while the controller has no fleet manager
+// (PC+0x958), and the client creates that in InitDataManager (0x5BA4D0-
+// 0x5BA5CE) only once its PlayerState has replicated -- a different actor
+// channel than the RPC's. The store itself (0x35AAD0) is a plain write, so a
+// repeat changes nothing.
+//
+// NOT verified live: that the ship selection follows the RPC (its readers
+// take the active fleet on demand through 0x345420, e.g. 0x4EB990, 0x41E2A0;
+// the selection widget itself is a Blueprint).
+#define RVA_FNAME_CLIENT_SET_ACTIVE_FLEET_ID 0x3E102C0
+static const DWORD kFleetSendAfterMs[] = {0, 5000, 20000};
+static const int kFleetSends = (int)(sizeof(kFleetSendAfterMs) / sizeof(kFleetSendAfterMs[0]));
+
+static void SendActiveFleet(uint8_t *pc, PlayerSeen *seen) {
+  if (!seen->fleet[0] || seen->fleetSends >= kFleetSends ||
+      GetTickCount() - seen->fleetSince < kFleetSendAfterMs[seen->fleetSends])
+    return;
+  int send = ++seen->fleetSends;
+  __try {
+    wchar_t text[33];
+    for (int i = 0; i < 33; ++i)
+      text[i] = (wchar_t)seen->fleet[i];
+    FNameMin id = {};
+    ((tFNameCtor)(g_base + RVA_FNAME_CTOR_WIDE))(&id, text, 1 /* FNAME_Add */);
+    uint64_t name = *(uint64_t *)(g_base + RVA_FNAME_CLIENT_SET_ACTIVE_FLEET_ID);
+    void *fn = name ? ((tFindFunctionChecked)(g_base + RVA_FIND_FUNCTION_CHECKED))(pc, name) : nullptr;
+    if (!fn) {
+      Logf("fleet: ClientSetActiveFleetId not found on controller %p; not sent", pc);
+      seen->fleetSends = kFleetSends;
+      return;
+    }
+    uint64_t parms = *(uint64_t *)&id; // the one parameter: FName fleetId
+    void **vt = *(void ***)pc;
+    ((tProcessEventVirt)vt[VT_PROCESS_EVENT / 8])(pc, fn, &parms);
+    Logf("fleet: ClientSetActiveFleetId(%s) sent to controller %p, send %d/%d",
+         seen->fleet, pc, send, kFleetSends);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("fleet: EXCEPTION sending ClientSetActiveFleetId to controller %p", pc);
+    seen->fleetSends = kFleetSends;
+  }
+}
+
+// The fleet= line of /battle/player: 32 hex characters, or nothing is sent.
+static void RememberMatchFleet(uint8_t *pc, PlayerSeen *seen, const char *pid, const char *body) {
+  char v[64];
+  if (!FieldValue(body, "fleet", v, sizeof(v)) || !v[0]) {
+    Logf("fleet: mmogbrain named no match fleet for controller %p (pid %s); "
+         "ClientSetActiveFleetId not sent", pc, pid);
+    return;
+  }
+  size_t n = strlen(v);
+  bool hex = n == 32;
+  for (size_t i = 0; hex && i < n; ++i)
+    hex = isxdigit((unsigned char)v[i]) != 0;
+  if (!hex) {
+    Logf("fleet: mmogbrain's fleet id \"%s\" for controller %p is not 32 hex characters; not sent", v, pc);
+    return;
+  }
+  memcpy(seen->fleet, v, 33);
+  seen->fleetSince = GetTickCount();
+  seen->fleetSends = 0;
+  Logf("fleet: controller %p (pid %s) fields fleet %s in this match", pc, pid, v);
+}
+
 static void NamePlayer(uint8_t *gm, uint8_t *pc, PlayerSeen *seen) {
   seen->named = true; // one attempt per player, logged either way
   static wchar_t name[64];
   name[0] = 0;
   const char *source = "mmogbrain";
-  char pid[80], path[160], body[1024], v[128];
+  char pid[80], path[288], body[1024], v[128], match[96];
   if (PlayerPIDForController(pc, pid, sizeof(pid))) {
-    _snprintf_s(path, sizeof(path), _TRUNCATE, "/battle/player?pid=%s", pid);
+    // match= (the host's -MatchID) is for the fleet= line; without it
+    // mmogbrain takes the player's running match.
+    if (MatchIDFromCommandLine(match, sizeof(match)))
+      _snprintf_s(path, sizeof(path), _TRUNCATE, "/battle/player?pid=%s&match=%s", pid, match);
+    else
+      _snprintf_s(path, sizeof(path), _TRUNCATE, "/battle/player?pid=%s", pid);
     if (HttpGetLoopback(path, body, sizeof(body))) {
       if (FieldValue(body, "name", v, sizeof(v)) && v[0])
         MultiByteToWideChar(CP_UTF8, 0, v, -1, name, 32);
       SetCaptainDisplayInfo(pc, body);
+      RememberMatchFleet(pc, seen, pid, body);
+    } else {
+      Logf("fleet: no /battle/player answer for controller %p (pid %s, HTTP %d); "
+           "ClientSetActiveFleetId not sent", pc, pid, g_httpLastStatus);
     }
   }
   if (!name[0]) {
@@ -5506,6 +5607,7 @@ static void PlayersTick(uint8_t *gm) {
         ++humansOnTeam[t];
       if (!seen->named)
         NamePlayer(gm, pc, seen);
+      SendActiveFleet(pc, seen);
     }
 
     // Humans take bot slots on their own team, in any mode with bots

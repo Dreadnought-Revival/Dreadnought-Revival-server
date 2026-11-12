@@ -349,8 +349,15 @@ func buildMmogEnterMatchmakingPayload(requestName string, playerPID string, payl
 	entryID := uuid.New().String()
 	database := currentMmogPlayerStateDB()
 	if database != nil {
-		_, _ = database.Exec(`DELETE FROM queue_entries WHERE user_id=? AND status='waiting'`, pid)
 		fleetType := queuedFleetType(database, pid, payload)
+		// The fleet must be one the client was sent and hold a ship (see
+		// match_fleet.go); both tokens are the client's own.
+		if reason := queueFleetProblem(pid, fleetType); reason != "" {
+			logrus.WithFields(logrus.Fields{"pid": pid, "mode": gameMode, "fleet_type": fleetType, "reason": reason}).
+				Warn("matchmaking: queue refused -- the fleet cannot be taken into a match")
+			return buildMmogMatchmakingErrorPayload(requestName, 2, reason, "the fleet cannot be taken into a match")
+		}
+		_, _ = database.Exec(`DELETE FROM queue_entries WHERE user_id=? AND status='waiting'`, pid)
 		if _, err := database.Exec(`INSERT INTO queue_entries(id,user_id,game_mode,tier_min,tier_max,fleet_type,status) VALUES(?,?,?,?,?,?,'waiting')`,
 			entryID, pid, gameMode, tierMin, tierMax, fleetType); err != nil {
 			return buildMmogMatchmakingErrorPayload(requestName, 2, "invalid_player", "queue insert failed")
@@ -839,7 +846,9 @@ func buildMmogErrorPayload(requestName string, message string) []byte {
 //
 // reason must be one of the tokens the client's interpreter knows
 // (FUN_140aa7870): invalid_version, invalid_player, invalid_fleet,
-// invalid_gametype, fleet_on_maintenance, map_unavailable. Anything else -- or
+// empty_fleet, invalid_gametype, fleet_on_maintenance, map_unavailable,
+// already_in_room, fleet_data_error (list completed 2026-11-11 from the
+// token table at 0x2A497C0). Anything else -- or
 // nothing, which is what we used to send -- lands on its generic "Something went
 // wrong when entering matchmaking" with an empty bracket in the log, telling the
 // player nothing about what to change.
@@ -1254,12 +1263,7 @@ func fleetUnlocked(fleet mmogFleetSeed, ownedTiers map[int32]bool) bool {
 func buildMmogPlayerFleetsPayload(playerPID string) []byte {
 	var b []byte
 	var stack []int
-	state := mmogPlayerStateForPID(playerPID)
-	fleets := state.fleets
-	if len(fleets) == 0 {
-		fleets = []mmogFleetSeed{starterFleetState()}
-	}
-	fleets = unlockedFleets(state, playerPID, fleets)
+	fleets := clientFleets(mmogPlayerStateForPID(playerPID), playerPID)
 
 	// "result" IS the fleet array itself — not an object wrapping one.
 	//
