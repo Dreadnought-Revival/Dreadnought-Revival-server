@@ -107,7 +107,7 @@ func adminAPIMessages(w http.ResponseWriter, _ *http.Request) {
 	out := []sent{}
 	if database := currentMmogPlayerStateDB(); database != nil {
 		rows, err := database.Query(`SELECT created_at, action, details, actor FROM admin_audit
-			WHERE action IN ('server message','message of the day') ORDER BY id DESC LIMIT 20`)
+			WHERE action IN ('server message','message of the day') ORDER BY id DESC LIMIT 50`)
 		if err == nil {
 			for rows.Next() {
 				var x sent

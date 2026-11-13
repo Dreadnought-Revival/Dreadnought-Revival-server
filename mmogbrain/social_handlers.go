@@ -523,6 +523,9 @@ func handlePresenceSocialMethod(r socialRequest) map[string]any {
 // chatLineRefused is why a chat line is not relayed: too long, or the player
 // is flooding (see the limits in social.go). "" relays it.
 func chatLineRefused(peer *socialPeer, body string) string {
+	if adminChatMuted(peer.playerID) { // admin_mutes.go
+		return "muted"
+	}
 	if utf8.RuneCountInString(body) > maxChatMessageRunes {
 		return "message too long"
 	}

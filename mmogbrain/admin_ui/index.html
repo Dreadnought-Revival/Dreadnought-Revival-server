@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Server Admin</title>
+<script>
+// The saved theme goes on before the first paint, so the page never flashes.
+try { const t = localStorage.getItem('adminTheme'); if (t === 'dark' || t === 'light') document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+<link rel="stylesheet" href="/admin/ui/style.css">
+</head>
+<body>
+
+<div id="login" class="hidden">
+  <form class="card" id="loginForm" autocomplete="off">
+    <h1>Server Admin</h1>
+    <div class="muted">Enter the admin key (ADMIN_KEY in run/secrets.env).</div>
+    <input type="password" id="keyInput" placeholder="Admin key" autocomplete="off" required>
+    <div class="row"><button class="btn primary" type="submit">Sign in</button><span class="err" id="loginErr"></span></div>
+  </form>
+</div>
+
+<div id="app" class="shell hidden">
+  <aside id="side">
+    <div class="brand"><span class="mark">D</span><span><b>Server Admin</b><small>Dreadnought Revival</small></span></div>
+    <div class="jump">
+      <input type="search" id="jump" placeholder="Find a player  ( / )" autocomplete="off" spellcheck="false">
+      <div class="jump-list hidden" id="jumpList"></div>
+    </div>
+    <nav id="nav"></nav>
+    <div class="side-foot" id="sideFoot"></div>
+  </aside>
+  <div class="main">
+    <header class="top">
+      <button class="btn small" id="menuBtn" type="button" aria-label="Menu">☰</button>
+      <h1 id="pageTitle">Overview</h1>
+      <span class="spacer"></span>
+      <span class="muted" id="updated"></span>
+      <button class="btn small" id="refreshBtn" type="button">Refresh</button>
+      <button class="btn small" id="pauseBtn" type="button" title="Automatic refresh on or off">Live</button>
+      <button class="btn small" id="themeBtn" type="button">Theme</button>
+      <button class="btn small" id="logoutBtn" type="button">Sign out</button>
+    </header>
+    <main id="main"></main>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<script src="/admin/ui/core.js"></script>
+<!--PAGES-->
+<script>Admin.start();</script>
+</body>
+</html>

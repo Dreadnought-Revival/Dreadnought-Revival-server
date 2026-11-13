@@ -950,7 +950,9 @@ func buildMmogChatPayload(requestName string, playerPID string, payload []byte) 
 		channel = "global"
 	}
 	message := protocol.FirstNonEmptyString(payload, "message", "Message", "content", "Content", "text", "Text")
-	if message != "" {
+	// A muted player's line is not stored, so nobody reads it (admin_mutes.go);
+	// the sender still gets the ordinary reply.
+	if message != "" && !adminChatMuted(playerPID) {
 		persistMmogChatMessage(normalizedPlayerStatePID(playerPID), channel, message)
 	}
 

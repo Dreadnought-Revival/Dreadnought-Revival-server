@@ -118,6 +118,21 @@ func adminAPIFairPlay(w http.ResponseWriter, r *http.Request) {
 	if q.Get("unreviewed") == "1" {
 		where = append(where, `rv.status IS NULL`)
 	}
+	// verdict: one review status, or "none" (not reviewed, flagged or not).
+	if v := strings.TrimSpace(q.Get("verdict")); v == "none" {
+		where = append(where, `rv.status IS NULL`)
+	} else if fairPlayReviewStatuses[v] {
+		where = append(where, `rv.status=?`)
+		args = append(args, v)
+	}
+	// q: a player by name (substring) or by pid prefix.
+	if v := strings.TrimSpace(q.Get("q")); v != "" {
+		if len(v) > 100 {
+			v = v[:100]
+		}
+		where = append(where, `b.user_id IN (SELECT user_id FROM player_state WHERE display_name LIKE ? ESCAPE '\' OR user_id LIKE ? ESCAPE '\')`)
+		args = append(args, "%"+adminLikeEscape(v)+"%", adminLikeEscape(strings.ToLower(strings.ReplaceAll(v, "-", "")))+"%")
+	}
 	if v := strings.TrimSpace(q.Get("mode")); v != "" {
 		where = append(where, `m.game_mode=?`)
 		args = append(args, v)
@@ -144,7 +159,7 @@ func adminAPIFairPlay(w http.ResponseWriter, r *http.Request) {
 		-- battle_results.match_id is the battle server's id (matches.battle_match_id)
 		LEFT JOIN matches m ON m.battle_match_id=b.match_id AND b.match_id<>''
 		LEFT JOIN fair_play_reviews rv ON rv.match_id=b.match_id AND rv.user_id=b.user_id
-		WHERE `+strings.Join(where, " AND ")+` ORDER BY b.created_at DESC, b.user_id LIMIT 200`, args...)
+		WHERE `+strings.Join(where, " AND ")+` ORDER BY b.created_at DESC, b.user_id LIMIT ?`, append(args, adminPageLimit(r, 200))...)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -226,7 +241,29 @@ func adminAPIFairPlay(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = mrows.Close()
 	}
-	out := map[string]any{"results": results, "thresholds": fairPlayThresholds, "modes": modes}
+	// Summary of the listed results (not of the whole table): flags per
+	// check kind, and how many flagged results are reviewed vs still open.
+	byFlag := map[string]int{}
+	byVerdict := map[string]int{}
+	flaggedN, openN, reviewedN := 0, 0, 0
+	for _, x := range results {
+		for _, f := range x.Flags {
+			byFlag[f]++
+		}
+		if x.Review != nil {
+			byVerdict[x.Review.Status]++
+			reviewedN++
+		}
+		if len(x.Flags) > 0 {
+			flaggedN++
+			if x.Review == nil {
+				openN++
+			}
+		}
+	}
+	summary := map[string]any{"listed": len(results), "flagged": flaggedN, "open": openN,
+		"reviewed": reviewedN, "by_flag": byFlag, "by_verdict": byVerdict}
+	out := map[string]any{"results": results, "thresholds": fairPlayThresholds, "modes": modes, "summary": summary}
 	if pid := strings.TrimSpace(q.Get("pid")); pid != "" {
 		var checked, flagged, reviewed int
 		_ = database.QueryRow(`SELECT COUNT(*),

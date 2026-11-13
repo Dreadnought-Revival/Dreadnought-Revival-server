@@ -107,3 +107,88 @@ func TestAdminAPIDoesNotDeadlockTheStore(t *testing.T) {
 		}
 	}
 }
+
+// adminAPIRoutes walks the router for every /admin/api route: path with its
+// {vars} filled in (pid-shaped where the route wants a player) and methods.
+func adminAPIRoutes(t *testing.T, r *mux.Router, pid string) (routes []struct{ path, method string }) {
+	t.Helper()
+	fill := strings.NewReplacer("{pid}", pid, "{id}", "1", "{table}", "x", "{name}", "x")
+	_ = r.Walk(func(route *mux.Route, _ *mux.Router, _ []*mux.Route) error {
+		tpl, err := route.GetPathTemplate()
+		if err != nil || !strings.HasPrefix(tpl, "/admin/api/") {
+			return nil
+		}
+		path := fill.Replace(tpl)
+		if strings.Contains(path, "{") {
+			t.Errorf("route %s has a variable this test does not fill", tpl)
+			return nil
+		}
+		methods, _ := route.GetMethods()
+		for _, m := range methods {
+			routes = append(routes, struct{ path, method string }{path, m})
+		}
+		return nil
+	})
+	if len(routes) < 40 {
+		t.Fatalf("only %d admin routes found: the walk is broken", len(routes))
+	}
+	return routes
+}
+
+// Every route under /admin/api, present and future, refuses a missing or
+// wrong key -- the list above only names the old ones.
+func TestAdminEveryAPIRouteNeedsTheKey(t *testing.T) {
+	r := adminTestRouter()
+	for _, rt := range adminAPIRoutes(t, r, adminTestPID) {
+		for _, key := range []string{"", "wrong"} {
+			req := httptest.NewRequest(rt.method, rt.path, strings.NewReader(`{}`))
+			if key != "" {
+				req.Header.Set("X-Admin-Key", key)
+			}
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("%s %s with key %q: %d, want 403", rt.method, rt.path, key, rec.Code)
+			}
+		}
+	}
+}
+
+// Every GET route answers on a seeded store (whatever the status): none may
+// hold the single connection while it queries again.
+func TestAdminEveryGetRouteAnswers(t *testing.T) {
+	database := useTempMmogPlayerStateDB(t)
+	const pid = "650dd79476a1484b8adcd01ac2f17354"
+	if err := seedMmogPlayerState(database, pid); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`INSERT INTO matches(id,game_mode,map,server_ip,server_port,status,created_at,started_at,battle_match_id) VALUES('m1','TDM','Glacier','127.0.0.1',7777,'ended','2026-09-29T20:00:00Z','2026-09-29T20:00:00Z','bm1')`,
+		`INSERT INTO battle_results(match_id,user_id,outcome) VALUES('bm1','` + pid + `','win')`,
+		`INSERT INTO battle_result_stats(match_id,user_id,stat,value) VALUES('bm1','` + pid + `','score',10)`,
+		`INSERT INTO client_reports(user_id,type,name,desc) VALUES('` + pid + `','T','N','D')`,
+		`INSERT INTO client_telemetry(user_id,rt,battle_id,summary) VALUES('` + pid + `','YA_AnalyticsReceiveCreditsEvent','bm1','s')`,
+		`INSERT INTO chat_messages(id,channel,sender_id,content) VALUES('c1','dreadnought.global','` + pid + `','hi')`,
+		`INSERT INTO admin_player_notes(user_id,note) VALUES('` + pid + `','n')`,
+	} {
+		if _, err := database.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := adminTestRouter()
+	for _, rt := range adminAPIRoutes(t, r, pid) {
+		if rt.method != http.MethodGet {
+			continue
+		}
+		done := make(chan int, 1)
+		go func() { done <- adminGet(r, rt.path, "test-admin-key").Code }()
+		select {
+		case code := <-done:
+			if code >= 500 && code != http.StatusBadGateway && code != http.StatusServiceUnavailable {
+				t.Errorf("%s: %d", rt.path, code)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("%s did not answer in 3 s: the single-connection store is deadlocked", rt.path)
+		}
+	}
+}

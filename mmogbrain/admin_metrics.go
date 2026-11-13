@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -103,6 +104,57 @@ type adminMetricsTopPlayer struct {
 	Matches int    `json:"matches"`
 	Wins    int    `json:"wins"`
 	Kills   int    `json:"kills"`
+}
+
+type adminMetricsMap struct {
+	Map     string `json:"map"` // in-game name (adminMapName)
+	Matches int    `json:"matches"`
+}
+
+type adminMetricsShipClass struct {
+	Class   string `json:"class"` // the Statistics ship type, e.g. "Destroyer"
+	Seconds int64  `json:"seconds"`
+	Players int    `json:"players"`
+}
+
+type adminMetricsBalance struct {
+	Mode      string `json:"mode"`
+	Name      string `json:"name"`
+	Team0Wins int    `json:"team0_wins"`
+	Team1Wins int    `json:"team1_wins"`
+}
+
+// adminRetention: accounts created inside the window (player_state.created_at
+// from `first` on) form the cohort. An account "returned on day N" when it has
+// at least one battle_results row on the UTC calendar day N days after its
+// creation day; battle results are the only per-account activity history (a
+// login stores only the latest date). An account counts toward dayN_eligible
+// only when that day has completely passed (before today UTC), so recent
+// signups do not drag the share down. Shares are returned / eligible, 0 when
+// nobody is eligible.
+func adminRetention(database *sql.DB, first, now time.Time) map[string]any {
+	since := first.Format(adminSampleTimeFormat)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).Format("2006-01-02")
+	out := map[string]any{}
+	var cohort int
+	_ = database.QueryRow(`SELECT COUNT(*) FROM player_state WHERE created_at >= ?`, since).Scan(&cohort)
+	out["cohort"] = cohort
+	for _, n := range []int{1, 7} {
+		mod := "+" + strconv.Itoa(n) + " day"
+		var eligible, returned int
+		_ = database.QueryRow(`SELECT COUNT(*) FROM player_state p WHERE p.created_at >= ? AND date(p.created_at, ?) < ?`,
+			since, mod, today).Scan(&eligible)
+		_ = database.QueryRow(`SELECT COUNT(*) FROM player_state p WHERE p.created_at >= ? AND date(p.created_at, ?) < ?
+			AND EXISTS (SELECT 1 FROM battle_results b WHERE b.user_id=p.user_id AND date(b.created_at)=date(p.created_at, ?))`,
+			since, mod, today, mod).Scan(&returned)
+		share := 0.0
+		if eligible > 0 {
+			share = float64(returned) / float64(eligible)
+		}
+		k := "day" + strconv.Itoa(n)
+		out[k+"_eligible"], out[k+"_returned"], out[k+"_share"] = eligible, returned, share
+	}
+	return out
 }
 
 // GET /admin/api/metrics?days=N (1..90, default 7).
@@ -261,24 +313,98 @@ func adminCollectMetrics(database *sql.DB, days int, now time.Time) map[string]a
 	}, since)
 
 	top := []adminMetricsTopPlayer{}
-	each(`SELECT user_id, COUNT(*), COALESCE(SUM(outcome='win'),0), COALESCE(SUM(kills),0) FROM battle_results
-		WHERE created_at >= ? GROUP BY user_id ORDER BY 2 DESC, 4 DESC LIMIT 15`, func(rows *sql.Rows) error {
+	// Names by JOIN: adminPlayerName would also create a player_state row for
+	// an id that has results but no account.
+	each(`SELECT b.user_id, COALESCE(ps.display_name,''), COUNT(*), COALESCE(SUM(b.outcome='win'),0), COALESCE(SUM(b.kills),0)
+		FROM battle_results b LEFT JOIN player_state ps ON ps.user_id=b.user_id
+		WHERE b.created_at >= ? GROUP BY b.user_id ORDER BY 3 DESC, 5 DESC, b.user_id LIMIT 15`, func(rows *sql.Rows) error {
 		var p adminMetricsTopPlayer
-		err := rows.Scan(&p.PID, &p.Matches, &p.Wins, &p.Kills)
+		err := rows.Scan(&p.PID, &p.Name, &p.Matches, &p.Wins, &p.Kills)
 		if err == nil {
+			if p.Name == "" || p.Name == "Local" {
+				p.Name = "?"
+			}
 			top = append(top, p)
 		}
 		return err
 	}, since)
-	for i := range top { // after the rows are closed
-		top[i].Name = adminPlayerName(top[i].PID)
-	}
 
 	// Active players in the window, and how many of them had played before it.
 	var active, returning int
 	_ = database.QueryRow(`SELECT COUNT(DISTINCT user_id) FROM battle_results WHERE created_at >= ?`, since).Scan(&active)
 	_ = database.QueryRow(`SELECT COUNT(DISTINCT b.user_id) FROM battle_results b WHERE b.created_at >= ?
 		AND EXISTS (SELECT 1 FROM battle_results o WHERE o.user_id=b.user_id AND o.created_at < ?)`, since, since).Scan(&returning)
+
+	// Map popularity: matches per in-game map name (the map path's folder).
+	mapCounts := map[string]int{}
+	each(`SELECT map, COUNT(*) FROM matches WHERE created_at >= ? GROUP BY 1`, func(rows *sql.Rows) error {
+		var p string
+		var n int
+		err := rows.Scan(&p, &n)
+		if err == nil {
+			mapCounts[adminMapName(p)] += n
+		}
+		return err
+	}, sinceRFC)
+	maps := make([]adminMetricsMap, 0, len(mapCounts))
+	for name, n := range mapCounts {
+		maps = append(maps, adminMetricsMap{Map: name, Matches: n})
+	}
+	sort.Slice(maps, func(i, j int) bool {
+		if maps[i].Matches != maps[j].Matches {
+			return maps[i].Matches > maps[j].Matches
+		}
+		return maps[i].Map < maps[j].Map
+	})
+
+	// Ship class usage: the seconds players spent alive per ship type, from
+	// battle_result_stats rows time_<Type> (match_statistics.go: reported by the
+	// mod as ct=, or an even split over the ships flown for an older mod -- so
+	// the split part is an estimate). Counted for results inside the window.
+	shipClasses := []adminMetricsShipClass{}
+	each(`SELECT s.stat, COALESCE(SUM(s.value),0), COUNT(DISTINCT s.user_id) FROM battle_result_stats s
+		JOIN battle_results b ON b.match_id=s.match_id AND b.user_id=s.user_id
+		WHERE b.created_at >= ? AND s.stat LIKE 'time\_%' ESCAPE '\' AND s.value > 0 GROUP BY s.stat ORDER BY 2 DESC, 1`, func(rows *sql.Rows) error {
+		var c adminMetricsShipClass
+		var stat string
+		err := rows.Scan(&stat, &c.Seconds, &c.Players)
+		if err == nil {
+			c.Class = strings.TrimPrefix(stat, statTimePrefix)
+			shipClasses = append(shipClasses, c)
+		}
+		return err
+	}, since)
+
+	// Team win balance: per mode, the matches whose winning side was team 0
+	// and team 1. A match counts for a team when that team has a result with
+	// outcome 'win'. Draws and one-sided modes (every player on team 0, e.g.
+	// Onslaught) simply show up as team 0 wins or are absent.
+	balance := []adminMetricsBalance{}
+	balIdx := map[string]int{}
+	each(`SELECT m.game_mode, b.team, COUNT(DISTINCT b.match_id) FROM battle_results b
+		JOIN matches m ON m.battle_match_id=b.match_id WHERE b.created_at >= ? AND b.outcome='win' AND b.team IN (0,1)
+		GROUP BY 1,2 ORDER BY 1,2`, func(rows *sql.Rows) error {
+		var mode string
+		var team, n int
+		err := rows.Scan(&mode, &team, &n)
+		if err != nil {
+			return err
+		}
+		i, ok := balIdx[mode]
+		if !ok {
+			i = len(balance)
+			balIdx[mode] = i
+			balance = append(balance, adminMetricsBalance{Mode: mode, Name: serverChatModeNames[mode]})
+		}
+		if team == 0 {
+			balance[i].Team0Wins = n
+		} else {
+			balance[i].Team1Wins = n
+		}
+		return nil
+	}, since)
+
+	retention := adminRetention(database, first, now)
 
 	totals := adminMetricsDay{Day: "total"}
 	for _, d := range daily {
@@ -310,6 +436,10 @@ func adminCollectMetrics(database *sql.DB, days int, now time.Time) map[string]a
 		"fleets":            fleets,
 		"outcomes":          outcomes,
 		"top_players":       top,
+		"maps":              maps,
+		"ship_classes":      shipClasses,
+		"team_balance":      balance,
+		"retention":         retention,
 	}
 }
 

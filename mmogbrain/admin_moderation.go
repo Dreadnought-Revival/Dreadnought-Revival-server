@@ -38,8 +38,23 @@ var adminModeration = struct {
 	mu     sync.Mutex
 	loaded bool
 	banned map[string]bool
+	// until holds the end of a TIMED ban (admin_bans.expires_at); a banned
+	// player without an entry is banned for good. An expired entry counts as
+	// not banned at once; the sweeper (admin_ban_expiry.go) then removes the row.
+	until  map[string]time.Time
 	kicked map[string]time.Time // pid -> when; drops connections older than this
-}{banned: map[string]bool{}, kicked: map[string]time.Time{}}
+}{banned: map[string]bool{}, until: map[string]time.Time{}, kicked: map[string]time.Time{}}
+
+// adminBanActiveLocked: banned and not past a timed ban's end. mu must be held.
+func adminBanActiveLocked(pid string) bool {
+	if !adminModeration.banned[pid] {
+		return false
+	}
+	if end, ok := adminModeration.until[pid]; ok && !time.Now().Before(end) {
+		return false
+	}
+	return true
+}
 
 func adminLoadBans() {
 	database := currentMmogPlayerStateDB()
@@ -53,20 +68,25 @@ func adminLoadBans() {
 		return
 	}
 	set := map[string]bool{}
-	rows, err := database.Query(`SELECT user_id FROM admin_bans`)
+	until := map[string]time.Time{}
+	rows, err := database.Query(`SELECT user_id, expires_at FROM admin_bans`)
 	if err != nil {
 		return
 	}
 	for rows.Next() {
-		var pid string
-		if rows.Scan(&pid) == nil {
+		var pid, exp string
+		if rows.Scan(&pid, &exp) == nil {
 			set[pid] = true
+			if end, ok := adminParseExpiry(exp); ok {
+				until[pid] = end
+			}
 		}
 	}
 	_ = rows.Close()
 	adminModeration.mu.Lock()
 	if !adminModeration.loaded {
 		adminModeration.banned = set
+		adminModeration.until = until
 		adminModeration.loaded = true
 	}
 	adminModeration.mu.Unlock()
@@ -78,7 +98,7 @@ func adminPlayerBanned(pid string) bool {
 	pid = normalizedPlayerStatePID(pid)
 	adminModeration.mu.Lock()
 	defer adminModeration.mu.Unlock()
-	return adminModeration.banned[pid]
+	return adminBanActiveLocked(pid)
 }
 
 // adminConnectionRevoked reports whether a game connection that registered at
@@ -88,7 +108,7 @@ func adminConnectionRevoked(pid string, since time.Time) bool {
 	pid = normalizedPlayerStatePID(pid)
 	adminModeration.mu.Lock()
 	defer adminModeration.mu.Unlock()
-	if adminModeration.banned[pid] {
+	if adminBanActiveLocked(pid) {
 		return true
 	}
 	at, ok := adminModeration.kicked[pid]
@@ -152,7 +172,7 @@ func registerAdminModeration(api *mux.Router) {
 	api.HandleFunc("/players/{pid}/matches", adminAPIPlayerMatches).Methods(http.MethodGet)
 	api.HandleFunc("/players/{pid}/audit", adminAPIPlayerAudit).Methods(http.MethodGet)
 	api.HandleFunc("/bans", adminAPIBans).Methods(http.MethodGet)
-	api.HandleFunc("/audit", adminAPIAudit).Methods(http.MethodGet)
+	api.HandleFunc("/audit", adminAPIAudit).Methods(http.MethodGet) // admin_audit_query.go
 }
 
 func adminReason(w http.ResponseWriter, r *http.Request, required bool) (string, bool) {
@@ -194,22 +214,28 @@ func adminAPIPlayerBan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	reason, ok := adminReason(w, r, true)
+	reason, hours, ok := adminReasonHours(w, r, true)
 	if !ok {
 		return
 	}
 	adminLoadBans()
-	if _, err := database.Exec(`INSERT INTO admin_bans(user_id,reason) VALUES(?,?)
-		ON CONFLICT(user_id) DO UPDATE SET reason=excluded.reason`, pid, reason); err != nil {
+	expires := adminExpiryAfter(hours)
+	if _, err := database.Exec(`INSERT INTO admin_bans(user_id,reason,expires_at) VALUES(?,?,?)
+		ON CONFLICT(user_id) DO UPDATE SET reason=excluded.reason, expires_at=excluded.expires_at`, pid, reason, expires); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	adminModeration.mu.Lock()
 	adminModeration.banned[pid] = true
+	if end, ok := adminParseExpiry(expires); ok {
+		adminModeration.until[pid] = end
+	} else {
+		delete(adminModeration.until, pid)
+	}
 	adminModeration.mu.Unlock()
 	online := adminDisconnect(pid)
 	authErr := adminAuthCall("/admin/ban", pid, reason)
-	details := map[string]any{"reason": reason, "was_online": online, "auth": "ok"}
+	details := map[string]any{"reason": reason, "was_online": online, "auth": "ok", "hours": hours, "expires_at": expires}
 	if authErr != nil {
 		details["auth"] = authErr.Error()
 	}
@@ -222,21 +248,40 @@ func adminAPIPlayerUnban(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	adminLoadBans()
-	if _, err := database.Exec(`DELETE FROM admin_bans WHERE user_id=?`, pid); err != nil {
+	authErr, err := adminUnbanPlayer(database, pid)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	adminModeration.mu.Lock()
-	delete(adminModeration.banned, pid)
-	adminModeration.mu.Unlock()
-	authErr := adminAuthCall("/admin/unban", pid, "")
 	details := map[string]any{"auth": "ok"}
 	if authErr != nil {
 		details["auth"] = authErr.Error()
 	}
 	adminAudit(database, r, "unban", pid, details)
 	adminAPIPlayerDetail(w, r)
+}
+
+// adminUnbanPlayer lifts a ban: the database row, the in-memory list, and the
+// auth server (best effort, returned as authErr). The one path for a manual
+// unban and for the expiry sweeper.
+func adminUnbanPlayer(database *sql.DB, pid string) (authErr, err error) {
+	if err := adminUnbanLocal(database, pid); err != nil {
+		return nil, err
+	}
+	return adminAuthCall("/admin/unban", pid, ""), nil
+}
+
+// adminUnbanLocal lifts mmogbrain's own ban (row and memory list) only.
+func adminUnbanLocal(database *sql.DB, pid string) error {
+	adminLoadBans()
+	if _, err := database.Exec(`DELETE FROM admin_bans WHERE user_id=?`, pid); err != nil {
+		return err
+	}
+	adminModeration.mu.Lock()
+	delete(adminModeration.banned, pid)
+	delete(adminModeration.until, pid)
+	adminModeration.mu.Unlock()
+	return nil
 }
 
 // adminAuthCall forwards a ban/unban to the auth server so the launcher
@@ -400,20 +445,6 @@ func adminAPIPlayerAudit(w http.ResponseWriter, r *http.Request) {
 	writeAdminJSON(w, map[string]any{"audit": rows})
 }
 
-func adminAPIAudit(w http.ResponseWriter, _ *http.Request) {
-	database := currentMmogPlayerStateDB()
-	if database == nil {
-		http.Error(w, `{"error":"database unavailable"}`, http.StatusServiceUnavailable)
-		return
-	}
-	rows, err := adminAuditRows(database, ``)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	writeAdminJSON(w, map[string]any{"audit": rows})
-}
-
 func adminAPIBans(w http.ResponseWriter, _ *http.Request) {
 	database := currentMmogPlayerStateDB()
 	if database == nil {
@@ -421,26 +452,141 @@ func adminAPIBans(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	type row struct {
-		PID    string `json:"pid"`
-		Name   string `json:"name"`
-		Reason string `json:"reason"`
-		At     string `json:"at"`
+		PID       string `json:"pid"`
+		Name      string `json:"name"`
+		Reason    string `json:"reason"`
+		At        string `json:"at"`
+		ExpiresAt string `json:"expires_at"` // "" = permanent, else UTC "YYYY-MM-DD HH:MM:SS"
 	}
 	out := []row{}
-	rows, err := database.Query(`SELECT user_id, reason, created_at FROM admin_bans ORDER BY created_at DESC`)
+	// Names joined in the one query: the store has ONE connection. A ban past
+	// its end is not listed (it no longer holds; the sweeper removes the row).
+	rows, err := database.Query(`SELECT b.user_id, COALESCE(NULLIF(ps.display_name,'Local'),'?'), b.reason, b.created_at, b.expires_at
+		FROM admin_bans b LEFT JOIN player_state ps ON ps.user_id=b.user_id
+		WHERE b.expires_at='' OR b.expires_at>datetime('now') ORDER BY b.created_at DESC`)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	for rows.Next() {
 		var b row
-		if rows.Scan(&b.PID, &b.Reason, &b.At) == nil {
+		if rows.Scan(&b.PID, &b.Name, &b.Reason, &b.At, &b.ExpiresAt) == nil {
 			out = append(out, b)
 		}
 	}
 	_ = rows.Close()
-	for i := range out {
-		out[i].Name = adminPlayerName(out[i].PID)
-	}
 	writeAdminJSON(w, map[string]any{"bans": out})
+}
+
+// adminAPIAudit lists admin actions, newest first, with filters:
+//
+//	action=  contains (case-insensitive) in the action text
+//	q=       contains in action, actor (address) or details
+//	target=  a player id (dashed or not) or the start of one
+//	since=, until=  UTC "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS" (until is exclusive)
+//	before=  an audit id: only older rows (paging)
+//	limit=   1..500, default 200
+//
+// Reply: {audit:[...], more:bool, next:<id to pass as before>, actions:[distinct action words]}.
+func adminAPIAudit(w http.ResponseWriter, r *http.Request) {
+	database := currentMmogPlayerStateDB()
+	if database == nil {
+		http.Error(w, `{"error":"database unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	q := r.URL.Query()
+	where := []string{}
+	args := []any{}
+	contains := func(col, val string) {
+		where = append(where, `instr(lower(`+col+`), lower(?))>0`)
+		args = append(args, val)
+	}
+	if v := strings.TrimSpace(q.Get("action")); v != "" {
+		contains("a.action", v)
+	}
+	if v := strings.TrimSpace(q.Get("q")); v != "" {
+		where = append(where, `(instr(lower(a.action), lower(?))>0 OR instr(lower(a.actor), lower(?))>0 OR instr(lower(a.details), lower(?))>0)`)
+		args = append(args, v, v, v)
+	}
+	if v := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(q.Get("target")), "-", "")); v != "" {
+		if len(v) > 32 || strings.Trim(v, "0123456789abcdef") != "" {
+			http.Error(w, `{"error":"target must be a player id (hex)"}`, http.StatusBadRequest)
+			return
+		}
+		where = append(where, `a.target LIKE ?||'%'`)
+		args = append(args, v)
+	}
+	for _, f := range []struct{ key, op string }{{"since", ">="}, {"until", "<"}} {
+		if v := strings.TrimSpace(q.Get(f.key)); v != "" {
+			t, ok := adminParseExpiry(v)
+			if !ok {
+				if d, err := time.Parse("2006-01-02", v); err == nil {
+					t, ok = d, true
+				}
+			}
+			if !ok {
+				http.Error(w, `{"error":"`+f.key+` must be YYYY-MM-DD"}`, http.StatusBadRequest)
+				return
+			}
+			where = append(where, `a.created_at `+f.op+` ?`)
+			args = append(args, t.UTC().Format("2006-01-02 15:04:05"))
+		}
+	}
+	if v := strings.TrimSpace(q.Get("before")); v != "" {
+		var id int64
+		if _, err := fmt.Sscanf(v, "%d", &id); err != nil || id < 1 {
+			http.Error(w, `{"error":"before must be an audit id"}`, http.StatusBadRequest)
+			return
+		}
+		where = append(where, `a.id<?`)
+		args = append(args, id)
+	}
+	limit := 200
+	if v := strings.TrimSpace(q.Get("limit")); v != "" {
+		if _, err := fmt.Sscanf(v, "%d", &limit); err != nil || limit < 1 || limit > 500 {
+			http.Error(w, `{"error":"limit must be 1..500"}`, http.StatusBadRequest)
+			return
+		}
+	}
+	clause := ""
+	if len(where) > 0 {
+		clause = ` WHERE ` + strings.Join(where, ` AND `)
+	}
+	// One extra row tells whether there is a next page. Names are joined here:
+	// the store has ONE connection (no lookups while rows are open).
+	rows, err := database.Query(`SELECT a.id, a.created_at, a.actor, a.action, a.target, a.details,
+		COALESCE(NULLIF(ps.display_name,'Local'),'')
+		FROM admin_audit a LEFT JOIN player_state ps ON ps.user_id=a.target`+clause+
+		` ORDER BY a.id DESC LIMIT ?`, append(args, limit+1)...)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	out := []adminAuditRow{}
+	for rows.Next() {
+		var a adminAuditRow
+		if rows.Scan(&a.ID, &a.At, &a.Actor, &a.Action, &a.Target, &a.Details, &a.Name) == nil {
+			out = append(out, a)
+		}
+	}
+	_ = rows.Close()
+	more := len(out) > limit
+	if more {
+		out = out[:limit]
+	}
+	actions := []string{}
+	if ar, err := database.Query(`SELECT DISTINCT action FROM admin_audit ORDER BY action LIMIT 200`); err == nil {
+		for ar.Next() {
+			var s string
+			if ar.Scan(&s) == nil {
+				actions = append(actions, s)
+			}
+		}
+		_ = ar.Close()
+	}
+	next := int64(0)
+	if len(out) > 0 {
+		next = out[len(out)-1].ID
+	}
+	writeAdminJSON(w, map[string]any{"audit": out, "more": more, "next": next, "actions": actions})
 }

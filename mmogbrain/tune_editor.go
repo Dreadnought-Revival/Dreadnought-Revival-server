@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	dreadconfig "github.com/Dreadnought-Revival/Dreadnought-Revival-server/shared/dreadgameconfig"
@@ -279,6 +280,8 @@ func registerAdminTuneEditor(api *mux.Router) {
 	api.HandleFunc("/tune/discard", adminAPITuneDiscard).Methods(http.MethodPost)
 	api.HandleFunc("/tune/restore", adminAPITuneRestore).Methods(http.MethodPost)
 	api.HandleFunc("/tune/battle", adminAPITuneBattleServers).Methods(http.MethodPost)
+	api.HandleFunc("/tune/battle", adminAPITuneBattleStatus).Methods(http.MethodGet)
+	api.HandleFunc("/tune/versions/{id}", adminAPITuneVersion).Methods(http.MethodGet)
 }
 
 type tuneDiffRow struct {
@@ -410,16 +413,50 @@ func adminAPITuneTable(w http.ResponseWriter, r *http.Request) {
 	published := tuneEditor.published
 	tuneEditor.mu.RUnlock()
 	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	exact := r.URL.Query().Get("exact") // one row by its full name (the row editor)
 	names := []string{}
 	for n := range orig {
-		if q == "" || strings.Contains(strings.ToLower(n), q) {
+		if exact != "" {
+			if n == exact {
+				names = append(names, n)
+			}
+		} else if q == "" || strings.Contains(strings.ToLower(n), q) {
 			names = append(names, n)
 		}
 	}
 	sort.Strings(names)
 	total := len(names)
-	if len(names) > 30 {
-		names = names[:30]
+	// limit: 30 rows by default (the row editor); the table browser asks for
+	// up to 500 names (names=1: name + number of fields set, no field list).
+	limit := 30
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v >= 1 && v <= 500 {
+		limit = v
+	}
+	if len(names) > limit {
+		names = names[:limit]
+	}
+	if r.URL.Query().Get("names") == "1" {
+		type brief struct {
+			Name    string `json:"name"`
+			Fields  int    `json:"fields"`
+			Draft   int    `json:"draft"`   // fields with a draft value
+			Changed int    `json:"changed"` // fields with a published value
+		}
+		out := []brief{}
+		for _, n := range names {
+			b := brief{Name: n, Fields: len(orig[n]) - 1}
+			for k := range orig[n] {
+				if _, ok := draft[tuneChangeKey(table, n, k)]; ok {
+					b.Draft++
+				}
+				if _, ok := published[tuneChangeKey(table, n, k)]; ok {
+					b.Changed++
+				}
+			}
+			out = append(out, b)
+		}
+		writeAdminJSON(w, map[string]any{"table": table, "editable": tuneEditableTable(table), "total": total, "names": out})
+		return
 	}
 	type field struct {
 		Field     string `json:"field"`
@@ -511,6 +548,7 @@ func adminAPITuneDraft(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusInternalServerError, "could not save the draft")
 		return
 	}
+	adminAudit(database, r, "tune draft edit", "", map[string]any{"fields": len(req.Changes)})
 	adminAPITune(w, r)
 }
 
@@ -650,4 +688,106 @@ func replaceTuneDraft(w http.ResponseWriter, changes map[string]tuneChange) bool
 		return false
 	}
 	return true
+}
+
+// adminAPITuneVersion is one published version's changes next to the game's
+// own values (the preview before a restore). Read-only.
+func adminAPITuneVersion(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
+	database := currentMmogPlayerStateDB()
+	if err != nil || id < 1 {
+		writeAdminError(w, http.StatusBadRequest, "send a version id")
+		return
+	}
+	if database == nil {
+		writeAdminError(w, http.StatusServiceUnavailable, "database unavailable")
+		return
+	}
+	var at, actor, note, snapshot string
+	if database.QueryRow(`SELECT created_at, actor, note, changes FROM tune_versions WHERE id=?`, id).Scan(&at, &actor, &note, &snapshot) != nil {
+		writeAdminError(w, http.StatusNotFound, "no such version")
+		return
+	}
+	changes := []tuneDiffRow{}
+	for _, c := range sortedTuneChanges(tuneChangesMap(decodeTuneChanges(snapshot))) {
+		changes = append(changes, tuneDiffRow{Table: c.Table, Row: c.Row, Field: c.Field,
+			Original: tuneOriginal()[c.Table][c.Row][c.Field], Published: c.Value, Draft: c.Value})
+	}
+	writeAdminJSON(w, map[string]any{"id": id, "version": "1.0." + strconv.FormatInt(id, 10), "at": at, "actor": actor, "note": note, "changes": changes})
+}
+
+func tuneChangesMap(list []tuneChange) map[string]tuneChange {
+	m := map[string]tuneChange{}
+	for _, c := range list {
+		m[tuneChangeKey(c.Table, c.Row, c.Field)] = c
+	}
+	return m
+}
+
+// adminAPITuneBattleStatus: what the battle servers apply and which running
+// hosts started before the live version was published. A host reads
+// /battle/tune once, at map load (battle_tune.go), and the server keeps no
+// record of what each host was given, so "older" is DERIVED from the start
+// time (GUESS: assumes the host's map load is at its start time), not read
+// from the host. The control plane being unreachable is reported, not an error.
+func adminAPITuneBattleStatus(w http.ResponseWriter, _ *http.Request) {
+	database := currentMmogPlayerStateDB()
+	if database == nil {
+		writeAdminError(w, http.StatusServiceUnavailable, "database unavailable")
+		return
+	}
+	loadTuneEditor()
+	tuneEditor.mu.RLock()
+	id := tuneEditor.versionID
+	tuneEditor.mu.RUnlock()
+	on := tuneOnBattleServers()
+	var publishedAt string
+	if id > 0 {
+		_ = database.QueryRow(`SELECT created_at FROM tune_versions WHERE id=?`, id).Scan(&publishedAt)
+	}
+	type host struct {
+		Port    int    `json:"port"`
+		Mode    string `json:"mode"`
+		Map     string `json:"map"`
+		Started string `json:"started_at"`
+		Version string `json:"version"` // what the host most likely applies
+		Basis   string `json:"basis"`
+	}
+	hosts := []host{}
+	errText := ""
+	instances, err := controlPlaneInstances()
+	if err != nil {
+		errText = "the control plane does not answer: " + err.Error()
+	}
+	pub := tuneParseTime(publishedAt)
+	for _, in := range instances {
+		if !in.Running {
+			continue
+		}
+		h := host{Port: in.Port, Mode: in.GameMode, Map: in.Map, Started: in.StartedAt}
+		started := tuneParseTime(in.StartedAt)
+		switch {
+		case !on || id == 0:
+			h.Version, h.Basis = "game's own values", "battle servers apply nothing now"
+		case started.IsZero() || pub.IsZero():
+			h.Version, h.Basis = "unknown", "start or publish time unreadable"
+		case started.Before(pub):
+			h.Version, h.Basis = "older than live", "started before the live version was published"
+		default:
+			h.Version, h.Basis = "1.0."+strconv.FormatInt(id, 10), "started after the live version was published"
+		}
+		hosts = append(hosts, h)
+	}
+	writeAdminJSON(w, map[string]any{"on": on, "live": id, "published_at": publishedAt, "tables": tuneHostTableNames(),
+		"hosts": hosts, "error": errText})
+}
+
+// tuneParseTime reads RFC 3339 or SQLite "YYYY-MM-DD HH:MM:SS" (UTC); zero if unreadable.
+func tuneParseTime(s string) time.Time {
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05"} {
+		if t, err := time.ParseInLocation(layout, s, time.UTC); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }

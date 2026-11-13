@@ -161,6 +161,7 @@ func adminModesJSON() map[string]any {
 		queues = append(queues, q)
 	}
 	out["queues"] = queues
+	out["matches_7d"] = matchesByModeSince(database, time.Now().Add(-7*24*time.Hour))
 	out["max_team_size"] = matchmaker.MaxTeamSize
 	if mm := activeMatchmaker; mm != nil {
 		players, wait := mm.Sizing()
@@ -168,6 +169,28 @@ func adminModesJSON() map[string]any {
 		out["max_wait_s"] = adminSwitch{Value: int(wait / time.Second), Env: int(envMatchSizing.wait / time.Second), Dashboard: set[flagMatchMaxWait]}
 		out["autoscale"] = mm.AutoScaled()
 		out["backfill_window_s"] = int(mm.BackfillWindow / time.Second)
+	}
+	return out
+}
+
+// matchesByModeSince counts matches created since t by hosted game mode (one
+// query, rows closed before returning; created_at is RFC 3339).
+func matchesByModeSince(database *sql.DB, t time.Time) map[string]int {
+	out := map[string]int{}
+	if database == nil {
+		return out
+	}
+	rows, err := database.Query(`SELECT game_mode, COUNT(*) FROM matches WHERE created_at >= ? GROUP BY game_mode`, t.UTC().Format(time.RFC3339))
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var m string
+		var n int
+		if rows.Scan(&m, &n) == nil {
+			out[m] = n
+		}
 	}
 	return out
 }

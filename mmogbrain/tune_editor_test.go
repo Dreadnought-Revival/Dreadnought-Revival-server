@@ -149,7 +149,7 @@ func TestAdminTuneEditor(t *testing.T) {
 
 	var audits int
 	_ = database.QueryRow(`SELECT COUNT(*) FROM admin_audit WHERE action LIKE 'tune %'`).Scan(&audits)
-	if audits != 6 { // 3 publishes, 1 discard, 2 restores (the 404 one is not recorded)
+	if audits != 8 { // 2 draft saves, 3 publishes, 1 discard, 2 restores (the 404 one is not recorded)
 		t.Errorf("%d tune audit rows, want 6", audits)
 	}
 

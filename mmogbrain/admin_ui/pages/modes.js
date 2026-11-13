@@ -1,0 +1,135 @@
+// Game modes: one card per queue the game offers (team size, teams, matches
+// of the last 7 days) and the matchmaking switches. Every edit is staged; one
+// Save sends them together after a confirm (the route audits "game modes").
+(() => {
+  const { $, el, api, postJSON, fmt, chip, modeName, act } = Admin;
+  let data = null; let ctl = [];
+
+  // The server holds no per-mode on/off, map pool or fleet-tier setting; the
+  // cards show only what /modes reports.
+  const show = (key, v) => key === 'escalation_queue' ? (v ? modeName(v) + ' (' + v + ')' : 'no queue') : typeof v === 'boolean' ? (v ? 'listed' : 'hidden') : String(v);
+
+  function dirtyList() { return ctl.filter((c) => c.changed()); }
+  function refreshBar() {
+    const d = dirtyList();
+    ctl.forEach((c) => c.box && c.box.classList.toggle('md-dirty', c.changed()));
+    $('md-bar').classList.toggle('hidden', !d.length);
+    $('md-count').textContent = d.length ? `${d.length} unsaved change${d.length === 1 ? '' : 's'}` : '';
+    $('md-list').textContent = d.map((c) => c.describe()).join(' · ');
+  }
+
+  // control: one editable setting. kind 'team' (queue team size) or 'flag'.
+  function control(o) {
+    const c = { ...o, reset: false };
+    c.read = () => o.input.value;
+    c.changed = () => (c.reset && o.dashboard) || ((o.input.value.trim() !== '' || o.input.tagName === 'SELECT') && o.input.value !== o.cur);
+    c.value = () => o.fromInput(o.input.value);
+    c.describe = () => (c.reset && o.dashboard) ? `${o.label}: back to the default` : `${o.label}: ${o.showCur} → ${o.showNew(o.input.value)}`;
+    o.input.addEventListener('input', () => { c.reset = false; refreshBar(); });
+    o.input.addEventListener('change', () => { c.reset = false; refreshBar(); });
+    c.defaultLink = o.dashboard ? el('a', { class: 'link', onclick: () => { c.reset = true; o.input.value = o.envValue; refreshBar(); } }, 'use default') : null;
+    return c;
+  }
+
+  function render(d) {
+    data = d; ctl = [];
+    const counts = d.matches_7d || {};
+    const cards = d.queues.map((q) => {
+      const ts = q.team_size;
+      const box = el('div', { class: 'panel md-card' });
+      let input = null;
+      if (ts) {
+        input = el('input', { type: 'number', min: '1', max: String(d.max_team_size), step: '1', value: String(ts.value), 'aria-label': 'Max players per team, ' + q.queue });
+        const c = control({ box, input, cur: String(ts.value), dashboard: ts.dashboard, envValue: String(ts.env), kind: 'team', mode: q.mode,
+          label: `${modeName(q.queue)} team size`, showCur: String(ts.value), showNew: (v) => v, fromInput: (v) => Math.trunc(Number(v)) });
+        ctl.push(c); box.dataset.i = ctl.length - 1;
+      }
+      const n = counts[q.mode] || 0;
+      const isEsc = d.escalation_queue && d.escalation_queue.value === q.queue;
+      box.append(
+        el('div', { class: 'md-head' }, el('h3', {}, modeName(q.queue)), el('span', { class: 'muted mono' }, q.queue), el('span', { class: 'spacer' }),
+          isEsc ? chip('Escalation runs here', 'warn') : null, q.runs !== q.queue ? chip('hosted as ' + modeName(q.runs)) : null),
+        ts ? el('div', { class: 'md-team' }, el('label', {}, 'Max players per team', input),
+          el('span', { class: 'muted' }, ts.dashboard ? ['set here (default ' + ts.env + ') ', ctl[ctl.length - 1].defaultLink] : 'default')) : el('div', { class: 'muted' }, 'Lobby (Custom Game): not a queue, no team size.'),
+        el('dl', { class: 'kv md-kv' }, el('dt', {}, 'Teams'), el('dd', {}, q.teams == null ? '—' : String(q.teams)),
+          el('dt', {}, 'Max in a match'), el('dd', {}, q.max_players == null ? '—' : String(q.max_players)),
+          el('dt', {}, 'Matches, 7 days'), el('dd', {}, fmt(n))));
+      return box;
+    });
+    $('md-cards').replaceChildren(...(cards.length ? cards : [el('div', { class: 'empty' }, 'No queues.')]));
+
+    const sw = $('md-switches'); sw.replaceChildren();
+    const sel = (opts, value) => { const s = el('select', {}, opts.map(([v, t]) => el('option', { value: v }, t))); s.value = value; return s; };
+    const flag = (key, label, input, fromInput, showNew) => {
+      const s = d[key]; if (!s) return;
+      const cur = typeof s.value === 'boolean' ? (s.value ? '1' : '0') : String(s.value);
+      input.value = cur;
+      const box = el('label', {}, label, input);
+      const c = control({ box, input, cur, dashboard: s.dashboard, kind: 'flag', key, label, envValue: typeof s.env === 'boolean' ? (s.env ? '1' : '0') : String(s.env == null ? '' : s.env),
+        showCur: show(key, s.value), showNew: (v) => show(key, fromInput(v)), fromInput });
+      ctl.push(c);
+      sw.append(el('div', { class: 'md-field' }, box, el('span', { class: 'muted' }, s.dashboard ? ['set here (default ' + show(key, s.env) + ') ', c.defaultLink] : 'default (environment)')));
+    };
+    flag('escalation_queue', 'Escalation runs on', sel([['', 'No queue (off)'], ...d.queueable.map((m) => [m, `${modeName(m)} (${m})`])], d.escalation_queue.value), (v) => v);
+    flag('havoc', 'Havoc tile', sel([['1', 'Listed'], ['0', 'Hidden']], '1'), (v) => v === '1');
+    flag('custom_game', 'Custom Game tile', sel([['1', 'Listed'], ['0', 'Hidden']], '1'), (v) => v === '1');
+    flag('max_players', d.autoscale ? 'Max players per match' : 'Players per match (fixed)', el('input', { type: 'number', min: '1', max: String(d.max_players_max), step: '1' }), (v) => Math.trunc(Number(v)));
+    flag('max_wait_s', 'Max wait for idle players (s)', el('input', { type: 'number', min: '0', max: String(d.max_wait_s_max), step: '1' }), (v) => Math.trunc(Number(v)));
+    if (!sw.children.length) sw.append(el('div', { class: 'muted' }, 'The matchmaker is not running: its switches are not available.'));
+    refreshBar();
+  }
+
+  async function save() {
+    const body = {}; const team_sizes = {}; const reset = [];
+    const bad = [];
+    dirtyList().forEach((c) => {
+      const resetting = c.reset && c.dashboard;
+      if (c.kind === 'team') { team_sizes[c.mode] = resetting ? null : c.value(); if (!resetting && !(c.value() >= 1 && c.value() <= data.max_team_size)) bad.push(c.label + ': 1 to ' + data.max_team_size); }
+      else if (resetting) reset.push(c.key);
+      else {
+        body[c.key] = c.value();
+        if (c.key === 'max_players' && !(body[c.key] >= 1 && body[c.key] <= data.max_players_max)) bad.push('players per match: 1 to ' + data.max_players_max);
+        if (c.key === 'max_wait_s' && !(body[c.key] >= 0 && body[c.key] <= data.max_wait_s_max)) bad.push('max wait: 0 to ' + data.max_wait_s_max);
+      }
+    });
+    if (bad.length) { $('md-msg').className = 'err'; $('md-msg').textContent = 'Out of range: ' + bad.join('; '); return; }
+    if (Object.keys(team_sizes).length) body.team_sizes = team_sizes;
+    if (reset.length) body.reset = reset;
+    if (!dirtyList().length) return;
+    if (!confirm('Change these settings? They apply at once to matchmaking.\n\n' + dirtyList().map((c) => c.describe()).join('\n'))) return;
+    const d = await act(() => postJSON('/modes', body), 'md-msg', 'Saved. A tile shows or hides at each player\'s next login.');
+    if (d) render(d);
+  }
+
+  Admin.page({
+    id: 'modes', title: 'Game modes', group: 'Game', order: 10,
+    html: `<style>
+      #page-modes .md-cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+      #page-modes .md-card { margin: 0; }
+      #page-modes .md-card.md-dirty, #page-modes .md-field label.md-dirty { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn); }
+      #page-modes .md-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+      #page-modes .md-team { display: grid; gap: 4px; margin-bottom: 8px; }
+      #page-modes .md-team label { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; }
+      #page-modes .md-team input { width: 80px; }
+      #page-modes .md-kv { font-size: 13px; }
+      #page-modes .md-field { display: grid; gap: 4px; }
+      #page-modes .md-field label { padding: 2px; border: 1px solid transparent; border-radius: 7px; }
+      #page-modes .md-bar { position: sticky; bottom: 0; z-index: 2; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 10px 14px; background: var(--panel); border: 1px solid var(--warn); border-radius: 10px; box-shadow: 0 -2px 8px rgba(0,0,0,.12); }
+    </style>
+    <div class="note">The queues the game offers, the mode their matches are hosted in, and how many players a team takes. Co-op modes put every player on one team (bots fill the rest); PvP modes have two. A match never goes over "Players per match" below. A team size set here also goes to the battle server, which fills each side with bots up to it (needs the battle-server DLL from 2026-11-07); a mode left on its default keeps the battle server's own bot count. Large teams are untested: every bot is a full ship the battle server has to run.</div>
+    <section><h2>Queues</h2><div class="md-cards" id="md-cards"></div></section>
+    <section class="manage"><h2>Matchmaking switches</h2>
+      <div class="fields" id="md-switches"></div>
+      <div class="muted">Applies at once to matchmaking. A tile shows or hides at each player's next login. Matches counted by the mode they were hosted in.</div>
+    </section>
+    <div class="md-bar hidden" id="md-bar"><b id="md-count"></b><span class="muted" id="md-list"></span><span class="spacer"></span>
+      <button class="btn" id="md-discard">Discard</button><button class="btn primary" id="md-save">Save changes</button></div>
+    <p id="md-msg"></p>`,
+    init() { $('md-save').onclick = save; $('md-discard').onclick = () => { render(data); $('md-msg').textContent = ''; }; },
+    async load() {
+      const d = await api('/modes');
+      if (data && dirtyList().length) return; // keep staged edits across refresh
+      render(d);
+    },
+  });
+})();

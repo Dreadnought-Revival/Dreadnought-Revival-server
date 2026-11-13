@@ -621,6 +621,28 @@ var migrations = []string{
 	BEGIN
 		UPDATE player_ship_xp SET xp = 2147483647 WHERE user_id = NEW.user_id AND ship_id = NEW.ship_id;
 	END`,
+	// Admin dashboard, 2026-11-12 (admin_moderation.go, admin_player_profile.go).
+	// A ban may end by itself: expires_at is '' for a permanent ban, else the
+	// UTC time "YYYY-MM-DD HH:MM:SS" (the format datetime('now') writes, so
+	// the two compare as text).
+	`ALTER TABLE admin_bans ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''`,
+	// A muted player stays online and can play; their chat lines are dropped.
+	// expires_at as in admin_bans.
+	`CREATE TABLE IF NOT EXISTS admin_chat_mutes (
+		user_id    TEXT PRIMARY KEY,
+		reason     TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		expires_at TEXT NOT NULL DEFAULT ''
+	)`,
+	// Free-text notes an admin keeps on an account (never shown to the player).
+	`CREATE TABLE IF NOT EXISTS admin_player_notes (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id    TEXT NOT NULL,
+		note       TEXT NOT NULL,
+		actor      TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE INDEX IF NOT EXISTS admin_player_notes_user ON admin_player_notes(user_id, id)`,
 }
 
 func Open(path string) (*sql.DB, error) {

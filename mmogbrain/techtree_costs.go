@@ -283,6 +283,7 @@ func registerAdminTechTree(api *mux.Router) {
 	api.HandleFunc("/techtree/ships", adminAPITechTreeShips).Methods(http.MethodGet)
 	api.HandleFunc("/techtree/ships/{id}", adminAPITechTreeShip).Methods(http.MethodGet)
 	api.HandleFunc("/techtree/values", adminAPITechTreeSetValues).Methods(http.MethodPost)
+	api.HandleFunc("/techtree/costs", adminAPITechTreeCosts).Methods(http.MethodGet)
 	api.HandleFunc("/techtree/export", adminAPITechTreeExport).Methods(http.MethodGet)
 	api.HandleFunc("/techtree/import", adminAPITechTreeImport).Methods(http.MethodPost)
 }
@@ -492,4 +493,127 @@ func adminAPITechTreeExport(w http.ResponseWriter, _ *http.Request) {
 // not in the file stay as they are).
 func adminAPITechTreeImport(w http.ResponseWriter, r *http.Request) {
 	adminAPITechTreeSetValues(w, r)
+}
+
+// adminAPITechTreeCosts is the cost browser: every node of every ship as one
+// flat list (an id once, even when several ships list it), filtered by name
+// (q), line, tier and state (all | overridden | annotated | guess), paged
+// (limit up to 500, offset), with the summary of the whole tree. Read-only;
+// edits go through /techtree/values.
+func adminAPITechTreeCosts(w http.ResponseWriter, r *http.Request) {
+	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	line := r.URL.Query().Get("line")
+	state := r.URL.Query().Get("state")
+	if state != "" && state != "all" && state != "overridden" && state != "annotated" && state != "guess" {
+		writeAdminError(w, http.StatusBadRequest, "state must be all, overridden, annotated or guess")
+		return
+	}
+	tier := 0
+	if v := r.URL.Query().Get("tier"); v != "" {
+		t, err := strconv.Atoi(v)
+		if err != nil || t < 1 || t > 9 {
+			writeAdminError(w, http.StatusBadRequest, "tier must be 1 to 9")
+			return
+		}
+		tier = t
+	}
+	limit, offset := 100, 0
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v >= 1 && v <= 500 {
+		limit = v
+	}
+	if v, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && v >= 0 {
+		offset = v
+	}
+	type row struct {
+		Ship   string       `json:"ship"`
+		ShipID int32        `json:"ship_id"`
+		Line   string       `json:"line"`
+		Node   techTreeNode `json:"node"`
+		Tier   int32        `json:"tier"`
+		Hero   bool         `json:"hero"`
+	}
+	items := techTreeBaseItemsWith(false)
+	all := []row{}
+	seen := map[int32]bool{}
+	lines := map[string]bool{}
+	shipsPerTier := map[int32]int{}
+	overridden, annotated := 0, 0
+	for _, s := range costEditorShips() {
+		lines[s.Line] = true
+		shipsPerTier[s.Tier]++
+		for _, n := range techTreePage(s, items) {
+			if seen[n.ItemID] {
+				continue
+			}
+			seen[n.ItemID] = true
+			for _, v := range []*techTreeValue{n.XP, n.Price} {
+				if v == nil {
+					continue
+				}
+				if v.Overridden {
+					overridden++
+				} else if v.Status != "guess" || v.Source != "" {
+					annotated++
+				}
+			}
+			all = append(all, row{Ship: s.Name, ShipID: s.ID, Line: s.Line, Node: n, Tier: n.Tier, Hero: s.Hero})
+		}
+	}
+	match := func(x row) bool {
+		if line != "" && x.Line != line {
+			return false
+		}
+		if tier != 0 && x.Tier != int32(tier) {
+			return false
+		}
+		if q != "" && !strings.Contains(strings.ToLower(x.Node.Name+" "+x.Ship+" "+strconv.Itoa(int(x.Node.ItemID))), q) {
+			return false
+		}
+		if state == "" || state == "all" {
+			return true
+		}
+		for _, v := range []*techTreeValue{x.Node.XP, x.Node.Price} {
+			if v == nil {
+				continue
+			}
+			switch state {
+			case "overridden":
+				if v.Overridden {
+					return true
+				}
+			case "annotated":
+				if !v.Overridden && (v.Status != "guess" || v.Source != "") {
+					return true
+				}
+			case "guess":
+				if v.Status == "guess" {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	out := []row{}
+	total := 0
+	for _, x := range all {
+		if !match(x) {
+			continue
+		}
+		if total >= offset && len(out) < limit {
+			out = append(out, x)
+		}
+		total++
+	}
+	lineList := []string{}
+	for l := range lines {
+		lineList = append(lineList, l)
+	}
+	sort.Strings(lineList)
+	tiers := map[string]int{}
+	for t, n := range shipsPerTier {
+		tiers[strconv.Itoa(int(t))] = n
+	}
+	writeAdminJSON(w, map[string]any{"rows": out, "total": total, "offset": offset, "limit": limit,
+		"summary": map[string]any{"overridden": overridden, "annotated": annotated, "nodes": len(all), "ships": len(costEditorShips()), "ships_per_tier": tiers},
+		"lines":   lineList, "statuses": techTreeCostStatuses, "max_cost": maxTechTreeCost})
 }
