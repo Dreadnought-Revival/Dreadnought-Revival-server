@@ -197,6 +197,17 @@ ranking data to fill it with.
 
 Log: `eom stats: sent ClientSetTopPlayerMatchStats (empty, deferred) to controller …`.
 
+**Booster lines on the rewards screen (2026-11-14).** The client counts and
+labels a booster line (Win Bonus, First Win of the Day, Elite Status, Elite
+from Team, Battle Ready) only when that booster's id is in PRI+0x7B8, and
+multiplies the Elite from Team percentage by the number of names in PRI+0x790.
+Only two PRI RPCs write those fields, `ClientSetActiveBoosterIDs` (vtable slot
+`0x6B0`, body `0x5B01F0`) and `ClientSetEliteSharePlayers` (slot `0x6B8`, body
+`0x5B0230`); nothing in this exe sends them. Right after writing the reward
+pools the mod sends both to the player's PRI with mmogbrain's `booster_ids=`
+and `elite_share=` (FName globals `0x3E102B8` / `0x3E102D0`).
+Log: `eom boosters: PRI … -- ClientSetActiveBoosterIDs sent (N ids: …), ClientSetEliteSharePlayers sent (N elite allies)`.
+
 **Ordering (changed twice on 2026-09-29).** The client gathers its rewards in
 `UYEndOfMatchInitStage` (`0x32D4B0` -> `GatherEomReward` `0x340C40`), the first
 stage that `ClientStartEndOfMatchTransition` starts. Every fleet ship needs an

@@ -4823,7 +4823,7 @@ static bool TakeEventTotals(void *pri, int64_t *xp, int64_t *credits, int *event
 static void TakeFairPlayChecks(const char *pid, uint8_t *pc, uint8_t *pri, char *path, size_t pathLen);
 
 static void ReportMatchResult(void *orbitComp) {
-  char pid[80], match[96], path[3584], body[2048];
+  char pid[80], match[96], path[3584], body[4096];
   uint8_t *priOut = nullptr, *pcOut = nullptr;
   int kills = 0, deaths = 0, assists = 0, team = 0, result = 0, score = 0;
   const char *teamSource = "none";
@@ -4991,7 +4991,9 @@ static void ReportMatchResult(void *orbitComp) {
 // Verified from the exe's reflection data (2026-09-28):
 //
 //   PRI +0x800  m_creditsInfo  FYCreditsInfo (0x28):  +0x00 m_credits
-//               TArray<int32> per EYXPPoolType, +0x10 m_finalized, +0x18
+//               TArray<int32> per EYCreditsPoolType (NOT EYXPPoolType: RankUp
+//               0, Scoring 1, ...; mmogbrain sends that order since
+//               2026-11-14), +0x10 m_finalized, +0x18
 //               m_battleID FString. Checked at PRI+0x810.
 //   PRI +0x930  -> the XP manager; +0xF8 m_matchXPInfo FYMatchXPInfo (0x38):
 //               +0x00 m_freeXP TArray<int32> per pool, +0x10 m_shipsXP
@@ -5035,6 +5037,92 @@ static int PushActorNow(void *actor) {
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     Logf("eom rewards: EXCEPTION 0x%08X pushing actor %p", GetExceptionCode(), actor);
     return 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rewards screen booster lines (added 2026-11-14)
+//
+// The client builds the screen's booster lines itself (UYEndOfMatchDataManager
+// 0x345980 / 0x3456B0, GatherEomReward 0x340C40): a line (Win Bonus, First Win
+// of the Day, Elite Status, Elite from Team, Battle Ready) is counted and
+// labelled only when that booster's id is in PRI+0x7B8, and the Elite from
+// Team percentage is multiplied by the number of names in PRI+0x790 (count at
+// +0x798). Both are native PRI fields that only two client RPCs on the PRI
+// write -- verified from their bodies, which the PRI vtable 0x2FD3C68 holds
+// at the slots right after ClientSetTopPlayerMatchStats (0x6A8):
+//
+//   ClientSetActiveBoosterIDs(TArray<int32>)   slot 0x6B0, body 0x5B01F0:
+//       add rcx, 0x7B8; jmp TArray<int32> assign 0x1CF3240
+//   ClientSetEliteSharePlayers(TArray<FString>) slot 0x6B8, body 0x5B0230:
+//       add rcx, 0x790; jmp TArray<FString> assign 0x21F560
+//
+// Nothing in this exe sends them (the server build did). mmogbrain answers
+// /battle/result with booster_ids= (the boosters the result earned) and
+// elite_share= (the elite allies' names, comma-separated; an empty entry
+// still counts). Sent like ClientSetTopPlayerMatchStats: FindFunctionChecked
+// on the PRI with the FName globals the static initialisers fill (0xCD9C6 /
+// 0xCDA26: lea rcx -> 0x3E102B8 / 0x3E102D0, jmp FName ctor), then
+// ProcessEvent. The parms are ours and read-only to the engine.
+// ---------------------------------------------------------------------------
+#define RVA_FNAME_CLIENT_SET_ACTIVE_BOOSTER_IDS 0x3E102B8
+#define RVA_FNAME_CLIENT_SET_ELITE_SHARE_PLAYERS 0x3E102D0
+#define MAX_BOOSTER_IDS 8
+#define MAX_ELITE_SHARE 40
+
+static void SendBoosterRPCs(uint8_t *pri, const char *body) {
+  char v[640];
+  int32_t ids[MAX_BOOSTER_IDS] = {};
+  if (!FieldValue(body, "booster_ids", v, sizeof(v))) {
+    Logf("eom boosters: mmogbrain sent no booster_ids (older mmogbrain?); booster lines stay hidden");
+    return;
+  }
+  int nIds = v[0] ? ParseInts(v, ids, MAX_BOOSTER_IDS) : 0;
+
+  static wchar_t names[MAX_ELITE_SHARE][48];
+  static FStringMin share[MAX_ELITE_SHARE];
+  int nShare = 0;
+  if (FieldValue(body, "elite_share", v, sizeof(v)) && v[0]) {
+    for (const char *c = v; c && nShare < MAX_ELITE_SHARE;) {
+      const char *e = strchr(c, ',');
+      int len = e ? (int)(e - c) : (int)strlen(c);
+      char one[96];
+      if (len >= (int)sizeof(one))
+        len = (int)sizeof(one) - 1;
+      memcpy(one, c, (size_t)len);
+      one[len] = 0;
+      int wl = MultiByteToWideChar(CP_UTF8, 0, one, -1, names[nShare], 48);
+      if (wl <= 0) {
+        names[nShare][0] = 0;
+        wl = 1;
+      }
+      share[nShare] = {names[nShare], wl, wl};
+      ++nShare;
+      c = e ? e + 1 : nullptr;
+    }
+  }
+  __try {
+    tFindFunctionChecked find = (tFindFunctionChecked)(g_base + RVA_FIND_FUNCTION_CHECKED);
+    void **vt = *(void ***)pri;
+    void *fn = find(pri, *(uint64_t *)(g_base + RVA_FNAME_CLIENT_SET_ACTIVE_BOOSTER_IDS));
+    if (fn) {
+      TArrayIntMin parms = {nIds ? ids : nullptr, nIds, nIds};
+      ((tProcessEventVirt)vt[VT_PROCESS_EVENT / 8])(pri, fn, &parms);
+    }
+    void *fn2 = find(pri, *(uint64_t *)(g_base + RVA_FNAME_CLIENT_SET_ELITE_SHARE_PLAYERS));
+    if (fn2) {
+      struct {
+        FStringMin *data;
+        int32_t num, max;
+      } parms2 = {nShare ? share : nullptr, nShare, nShare};
+      ((tProcessEventVirt)vt[VT_PROCESS_EVENT / 8])(pri, fn2, &parms2);
+    }
+    Logf("eom boosters: PRI %p -- ClientSetActiveBoosterIDs %s (%d ids: %s), "
+         "ClientSetEliteSharePlayers %s (%d elite allies)",
+         pri, fn ? "sent" : "NOT FOUND", nIds, FieldValue(body, "booster_ids", v, sizeof(v)) ? v : "",
+         fn2 ? "sent" : "NOT FOUND", nShare);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("eom boosters: EXCEPTION 0x%08X sending the booster RPCs for PRI %p", GetExceptionCode(), pri);
   }
 }
 
@@ -5133,6 +5221,7 @@ static void WriteEomRewards(uint8_t *pri, const char *body, const char *match) {
   // operator 2026-09-30). A component replicates through its owner's actor
   // channel, so forcing the PRI covers m_matchXPInfo as well.
   (void)xpmOut;
+  SendBoosterRPCs(pri, body);
   int pushed = PushActorNow(pri);
   Logf("eom rewards: PRI %p written -- scoring pool credits %d xp %d, %d fleet ships "
        "(%d flown, unplayed share %d), both finalized; PRI pushed %d (FlushNetDormancy + ForceNetUpdate)",

@@ -5111,65 +5111,26 @@ func buildMmogBoosterDataPayload() []byte {
 	var stack []int
 
 	b = protocol.AppendStringField(b, "RT", "YA_GetBoosterData")
+	// The game's own boosters (boosters.go). CHANGED 2026-11-14: these were
+	// invented values (Elite 1.5/1.25, wrong types for the Battle Ready
+	// boosters, effect type 0 = YBT_NONE); the client labels the rewards
+	// screen's booster lines from this table.
 	b, stack = protocol.AppendArrayStart(b, stack, "BoosterTable")
-	for _, booster := range standardBoosterSeeds() {
-		b, stack = protocol.AppendUnnamedObjectStart(b, stack)
-		// Client's booster-entry parser (FUN_142a66500) reads "ID" (uppercase),
-		// not "id" — confirmed by decoding the indirect FName string in the
-		// shipping binary.
-		b = protocol.AppendInt32Field(b, "ID", booster.id)
-		b = protocol.AppendBoolField(b, "active", booster.active)
-		b = protocol.AppendInt32Field(b, "type", booster.boosterType)
-		b, stack = protocol.AppendArrayStart(b, stack, "effects")
-		for _, eff := range booster.effects {
-			b, stack = protocol.AppendUnnamedObjectStart(b, stack)
-			b = protocol.AppendInt32Field(b, "type", eff.effectType)
-			b = protocol.AppendInt32Field(b, "target", eff.target)
-			b, stack = protocol.AppendArrayStart(b, stack, "appliesToCreditsPool")
-			for _, pool := range eff.creditsPools {
-				b, stack = protocol.AppendUnnamedObjectStart(b, stack)
-				b = protocol.AppendInt32Field(b, "pool", pool)
-				b, stack = protocol.AppendObjectEnd(b, stack)
-			}
-			b, stack = protocol.AppendObjectEnd(b, stack)
-			b, stack = protocol.AppendArrayStart(b, stack, "appliesToReputationPool")
-			for _, pool := range eff.repPools {
-				b, stack = protocol.AppendUnnamedObjectStart(b, stack)
-				b = protocol.AppendInt32Field(b, "pool", pool)
-				b, stack = protocol.AppendObjectEnd(b, stack)
-			}
-			b, stack = protocol.AppendObjectEnd(b, stack)
-			b = protocol.AppendStringField(b, "multiplier", eff.multiplier)
-			b, stack = protocol.AppendArrayStart(b, stack, "multiplierAdditives")
-			b, stack = protocol.AppendObjectEnd(b, stack)
-			b, stack = protocol.AppendObjectEnd(b, stack)
-		}
-		b, stack = protocol.AppendObjectEnd(b, stack)
-		b, stack = protocol.AppendObjectEnd(b, stack)
+	for _, bst := range commonBoosters {
+		b, stack = appendBoosterEntry(b, stack, bst)
 	}
 	b, stack = protocol.AppendObjectEnd(b, stack)
-	// GoldMembershipTable is sent EMPTY, and that is a known gap rather than an
-	// oversight.
-	//
-	// Both tables are read by the same parser (FUN_142a65fe0), but not into the
-	// same shape: BoosterTable entries go through the booster-entry parser
-	// (FUN_142a66500, 0x50-byte elements), while GoldMembershipTable is copied
-	// into an array of 16-byte elements with FString frees on teardown -- i.e.
-	// an array of STRINGS, not objects.
-	//
-	// The game did sell memberships: CatalogIDTable holds eight category-31
-	// (YGoldMembership) SKUs, /Game/DevGroup/Meta/GoldMembership/
-	// SHOP_Booster_GoldMember_{001,003,007,014,030,090,180,360}D_DA. What is
-	// NOT established is what the strings in this array are -- ids, SKUs, or
-	// something else entirely -- and the one previous attempt to send
-	// speculative membership data (Membership.ExpireTime="0" instead of an
-	// omitted object) crashed the client with EXCEPTION_STACK_OVERFLOW. So this
-	// stays empty until something says what belongs in it.
-	//
-	// Suspected consequence, unconfirmed: the hangar's elite-status panel logs
-	// "Attempted to access index 0..2 from array Bonuses of length 0"
-	// (AGENT-CHAT S11.5). Three bonuses, none delivered.
+	// GoldMembershipTable: Elite Status. CHANGED 2026-11-14: sent empty
+	// before, on the belief that the client read it as an array of strings.
+	// It does not: the reader (FUN_142a65fe0) parses BOTH tables with the
+	// same booster-entry parser FUN_142a66500 into 0x20-byte entries (id,
+	// active, type, effects), BoosterTable to mmog+0x4478 and this one to
+	// mmog+0x4488. The rewards screen takes the Elite credits multiplier from
+	// entry 0 here (0x340C40), and the end-of-match booster flags merge both
+	// (0x345980). The hangar elite panel's "index 0..2 from array Bonuses of
+	// length 0" (AGENT-CHAT S11.5) is suspected to be this table being empty.
 	b, stack = protocol.AppendArrayStart(b, stack, "GoldMembershipTable")
+	b, stack = appendBoosterEntry(b, stack, goldMembership)
 	b, stack = protocol.AppendObjectEnd(b, stack)
 	b, stack = protocol.AppendObjectStart(b, stack, "result")
 	b = protocol.AppendStringField(b, fieldStatus, "ok")
@@ -5177,43 +5138,46 @@ func buildMmogBoosterDataPayload() []byte {
 	return b
 }
 
-type boosterEffectSeed struct {
-	effectType   int32
-	target       int32
-	creditsPools []int32
-	repPools     []int32
-	multiplier   string
-}
-
-type boosterSeed struct {
-	id          int32
-	active      bool
-	boosterType int32
-	effects     []boosterEffectSeed
-}
-
-func standardBoosterSeeds() []boosterSeed {
-	return []boosterSeed{
-		{id: 520028165, active: false, boosterType: 0, effects: []boosterEffectSeed{
-			{effectType: 0, target: 1, creditsPools: []int32{5}, repPools: []int32{3}, multiplier: "1.5"},
-		}},
-		{id: 520028166, active: false, boosterType: 1, effects: []boosterEffectSeed{
-			{effectType: 0, target: 1, creditsPools: []int32{6}, repPools: []int32{4}, multiplier: "2.0"},
-		}},
-		{id: 536805377, active: false, boosterType: 2, effects: []boosterEffectSeed{
-			{effectType: 0, target: 1, creditsPools: []int32{7}, repPools: []int32{5}, multiplier: "1.5"},
-			{effectType: 0, target: 2, creditsPools: []int32{8}, repPools: []int32{6}, multiplier: "1.25"},
-		}},
-		{id: 520028167, active: false, boosterType: 3, effects: []boosterEffectSeed{
-			{effectType: 0, target: 1, creditsPools: []int32{9}, repPools: []int32{7}, multiplier: "1.25"},
-		}},
-		{id: 520028169, active: false, boosterType: 4, effects: []boosterEffectSeed{
-			{effectType: 0, target: 1, creditsPools: []int32{10}, repPools: []int32{8}, multiplier: "1.5"},
-		}},
-		{id: 520028170, active: false, boosterType: 5, effects: []boosterEffectSeed{
-			{effectType: 0, target: 1, creditsPools: []int32{11}, repPools: []int32{9}, multiplier: "1.75"},
-		}},
+// appendBoosterEntry writes one booster the way the booster-entry parser
+// (FUN_142a66500: "ID", "active", "type", "effects") and the effect parser
+// (FUN_142a668e0: "type", "target", "appliesToCreditsPool" /
+// "appliesToReputationPool" as objects with "pool", "multiplier",
+// "multiplierAdditives") read it. "active" is the asset's m_activeInGame.
+func appendBoosterEntry(b []byte, stack []int, bst booster) ([]byte, []int) {
+	b, stack = protocol.AppendUnnamedObjectStart(b, stack)
+	// Client's booster-entry parser (FUN_142a66500) reads "ID" (uppercase),
+	// not "id" — confirmed by decoding the indirect FName string in the
+	// shipping binary.
+	b = protocol.AppendInt32Field(b, "ID", bst.id)
+	b = protocol.AppendBoolField(b, "active", true)
+	b = protocol.AppendInt32Field(b, "type", bst.boosterType)
+	b, stack = protocol.AppendArrayStart(b, stack, "effects")
+	for _, eff := range bst.effects {
+		b, stack = protocol.AppendUnnamedObjectStart(b, stack)
+		b = protocol.AppendInt32Field(b, "type", eff.currency)
+		b = protocol.AppendInt32Field(b, "target", eff.target)
+		b, stack = protocol.AppendArrayStart(b, stack, "appliesToCreditsPool")
+		for _, pool := range eff.creditsPools {
+			b, stack = protocol.AppendUnnamedObjectStart(b, stack)
+			b = protocol.AppendInt32Field(b, "pool", pool)
+			b, stack = protocol.AppendObjectEnd(b, stack)
+		}
+		b, stack = protocol.AppendObjectEnd(b, stack)
+		b, stack = protocol.AppendArrayStart(b, stack, "appliesToReputationPool")
+		for _, pool := range eff.repPools {
+			b, stack = protocol.AppendUnnamedObjectStart(b, stack)
+			b = protocol.AppendInt32Field(b, "pool", pool)
+			b, stack = protocol.AppendObjectEnd(b, stack)
+		}
+		b, stack = protocol.AppendObjectEnd(b, stack)
+		b = protocol.AppendStringField(b, "multiplier", strconv.FormatFloat(eff.multiplier, 'f', -1, 64))
+		b, stack = protocol.AppendArrayStart(b, stack, "multiplierAdditives")
+		b, stack = protocol.AppendObjectEnd(b, stack)
+		b, stack = protocol.AppendObjectEnd(b, stack)
 	}
+	b, stack = protocol.AppendObjectEnd(b, stack)
+	b, stack = protocol.AppendObjectEnd(b, stack)
+	return b, stack
 }
 
 // AI Difficulty Levels

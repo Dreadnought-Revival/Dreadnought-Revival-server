@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -35,52 +36,54 @@ import (
 // (match_id, user_id), so a repeated report grants nothing.
 //
 // GUESS (the operator's placeholder values, 2026-09-26; the original reward
-// tables are lost -- GitHub issue #71): credits 1500 for a
-// win / 750 otherwise, +100 per kill; XP 1000 / 500, +50 per kill, granted as
-// free XP, as rank XP and split over the ships flown. Each is overridable.
+// tables are lost -- GitHub issue #71): credits 1500 for a win / 750
+// otherwise, +100 per kill; XP 1000 / 500, +50 per kill. Each is overridable.
 //
-// Formula (operator, 2026-09-28):
+// CHANGED 2026-11-14 (operator chose "the game's boosters, base raised"):
+// the match's base -- base + performance, the Scoring pool -- now earns the
+// game's own boosters (boosters.go), each as its own line, base x
+// (multiplier - 1), summed:
 //
-//	Intermediate  = Base Reward (win/loss) + Performance Reward (per kill)
-//	Total XP      = Intermediate_xp      x (1 + 1.25 + 0.25 + Fleet + EliteTeam%)
-//	Total Credits = Intermediate_credits x (1 + 0.75 + 0.25 + Fleet + EliteTeam%)
+//	Win Bonus            +25% ship XP, credits, free XP (won matches)
+//	First Win of the Day +100% each (first won match since the daily reset)
+//	Battle Ready         the match's fleet: Recruit ship XP +100% / credits
+//	                     +50%; Veteran +125% / +75% / free XP +30%;
+//	                     Legendary +250% / +150% / free XP +30%
+//	Elite Status         the player's own: ship XP +100%, credits +100%,
+//	                     free XP +50%
+//	Elite from Team      per elite ally on the player's team: ship XP +10%,
+//	                     credits +10%, free XP +5%
 //
-// Same formula in every game mode. Fleet is the fleet battle bonus of the
-// match's fleet tier: Recruit 100%, Veteran 125%, Legendary 150% (operator,
-// 2026-09-28) -- the formula's "1.00" term, which is the Recruit value. The
-// tier comes from the match record (matches.fleet_type, keyed by the battle
-// server's match id); a result whose match is unknown pays Recruit.
-//
-// Configurable: DN_REWARD_XP_BONUSES / DN_REWARD_CREDIT_BONUSES (the fixed
-// terms, comma-separated fractions), DN_REWARD_FLEET_BONUSES (Recruit,
-// Veteran, Legendary) and DN_REWARD_ELITE_TEAM_PCT (a percentage, 0 by
-// default: nothing grants it yet). The fixed terms apply to every result.
+// It replaces the operator's 2026-09-28 formula (base x (1 + 1.25 + 0.25 +
+// fleet 1.00/1.25/1.50), credits 0.75 for the 1.25), whose fixed terms were
+// paid to everyone in the GoldMembership and TeammatesGoldMembership pools --
+// so every player got "elite" bonuses and actual Elite Status added nothing.
+// To keep a non-elite player's pay where it was, the base is scaled
+// (DN_REWARD_XP_SCALE 1.4, DN_REWARD_CREDIT_SCALE 1.6, fitted to the 1128
+// results of 2026-11-07..14) and free XP's base is 50% of the XP base
+// (DN_REWARD_FREE_XP_PERCENT; it was 25% of the whole payout). GUESS: the
+// scales and the free share are calibration, not original data.
 type battleRewards struct {
 	winCredits, lossCredits, killCredits int32
 	winXP, lossXP, killXP                int32
-	xpBonuses, creditBonuses             []float64
-	fleetBonuses                         []float64 // by EYFleetType-1: Recruit, Veteran, Legendary
-	eliteTeamPct                         float64
-	// freeXPPct is the share of a match's XP that is ALSO paid as free XP.
-	// The rest is ship XP only. CHANGED 2026-09-29: free XP was 100% of the
-	// match XP ("the free xp should be way less than that maybe 25 % of the
-	// total XP", operator). GUESS: the operator's figure; the client's own
-	// XPStandardFreeXpPercentage (YA_GetProgressionData) is not sent or traced.
+	xpScale, creditScale                 float64
+	// freeXPPct is free XP's base as a share of the (scaled) XP base; free
+	// XP then earns its own booster percentages.
 	freeXPPct int32
 	// unplayedShipXPPct is what every ship of the match's fleet that was NOT
-	// flown earns: this share of the match's XP WITHOUT the performance part,
-	// so the performance reward goes only to the ships played. The game's own
-	// text: "Whichever fleet you choose to play ... every ship in that fleet
-	// will earn Ship XP after you finish a match." GUESS: 10% is the
-	// operator's figure (2026-09-30); only flown ships earned anything before.
+	// flown earns: this share of the match's ship XP WITHOUT the performance
+	// part, so the performance reward goes only to the ships played. The
+	// game's own text: "Whichever fleet you choose to play ... every ship in
+	// that fleet will earn Ship XP after you finish a match." GUESS: 10% is
+	// the operator's figure (2026-09-30); only flown ships earned anything
+	// before.
 	unplayedShipXPPct int32
 	// eventXP is the match's XP from the ORIGINAL scoring table when the
 	// battle server reported it (event_xp, summed by battle-server-mod from
 	// AssignScoringReward, plus the end-of-match awards from
 	// endOfMatchEventXP). It replaces the win/loss + per-kill XP base;
-	// credits keep the formula (the original credit payout, ScoringParamsTable
-	// CrBuckets, is not in the datamine). GUESS: the formula's bonus terms and
-	// fleet bonus still apply on top, as they did to the placeholder base.
+	// credits keep the placeholder base (the original credit payout,
+	// ScoringParamsTable CrBuckets, is not in the datamine).
 	eventXP    int32
 	useEventXP bool
 	// ribbonCredits is what the match's ribbons pay (ribbonCredits in
@@ -88,6 +91,15 @@ type battleRewards struct {
 	// (eventCredits: tech cache pickups), added to the credit performance
 	// part like kill credits.
 	ribbonCredits int32
+	boosts        matchBoosts
+}
+
+// matchBoosts is which player-specific boosters a result earns. Win and
+// Battle Ready follow from the outcome and the match's fleet.
+type matchBoosts struct {
+	elite       bool // the player's Elite Status was active
+	eliteAllies int  // other players on the player's team with Elite Status
+	firstWin    bool // the player's first won match since the daily reset
 }
 
 // withEventXP is r paying xp as the match's XP base (see eventXP).
@@ -99,42 +111,25 @@ func (r battleRewards) withEventXP(xp int32) battleRewards {
 	return r
 }
 
-// fleetBonus is the fleet battle bonus of an EYFleetType (1 Recruit,
-// 2 Veteran, 3 Legendary); anything else pays Recruit.
-func (r battleRewards) fleetBonus(fleetType int) float64 {
-	if fleetType < 1 || fleetType > len(r.fleetBonuses) {
-		fleetType = 1
+func (r battleRewards) withBoosts(b matchBoosts) battleRewards {
+	if b.eliteAllies < 0 {
+		b.eliteAllies = 0
 	}
-	if len(r.fleetBonuses) == 0 {
-		return 0
-	}
-	return r.fleetBonuses[fleetType-1]
+	r.boosts = b
+	return r
 }
 
-// multiplier is 1 + every fixed bonus term + the fleet bonus + EliteTeam%.
-func (r battleRewards) multiplier(bonuses []float64, fleetType int) float64 {
-	m := 1 + r.fleetBonus(fleetType) + r.eliteTeamPct/100
-	for _, b := range bonuses {
-		m += b
-	}
-	return m
-}
-
-func parseRewardBonuses(env string, def []float64) []float64 {
+func rewardScale(env string, def float64) float64 {
 	v := strings.TrimSpace(os.Getenv(env))
 	if v == "" {
 		return def
 	}
-	var out []float64
-	for _, f := range strings.Split(v, ",") {
-		b, err := strconv.ParseFloat(strings.TrimSpace(f), 64)
-		if err != nil || b < 0 {
-			logrus.WithField("value", v).Warn(env + ": not a list of non-negative numbers; using the default")
-			return def
-		}
-		out = append(out, b)
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f < 0 || f > 100 {
+		logrus.WithField("value", v).Warn(env + ": not a number from 0 to 100; using the default")
+		return def
 	}
-	return out
+	return f
 }
 
 func currentBattleRewards() battleRewards {
@@ -147,11 +142,9 @@ func currentBattleRewards() battleRewards {
 	return battleRewards{
 		winCredits: n("DN_REWARD_WIN_CREDITS", 1500), lossCredits: n("DN_REWARD_LOSS_CREDITS", 750), killCredits: n("DN_REWARD_KILL_CREDITS", 100),
 		winXP: n("DN_REWARD_WIN_XP", 1000), lossXP: n("DN_REWARD_LOSS_XP", 500), killXP: n("DN_REWARD_KILL_XP", 50),
-		xpBonuses:     parseRewardBonuses("DN_REWARD_XP_BONUSES", []float64{1.25, 0.25}),
-		creditBonuses: parseRewardBonuses("DN_REWARD_CREDIT_BONUSES", []float64{0.75, 0.25}),
-		fleetBonuses:  parseRewardBonuses("DN_REWARD_FLEET_BONUSES", []float64{1.00, 1.25, 1.50}),
-		eliteTeamPct:  float64(n("DN_REWARD_ELITE_TEAM_PCT", 0)),
-		freeXPPct:     n("DN_REWARD_FREE_XP_PERCENT", 25),
+		xpScale:     rewardScale("DN_REWARD_XP_SCALE", 1.4),
+		creditScale: rewardScale("DN_REWARD_CREDIT_SCALE", 1.6),
+		freeXPPct:   n("DN_REWARD_FREE_XP_PERCENT", 50),
 
 		unplayedShipXPPct: n("DN_REWARD_UNPLAYED_SHIP_XP_PERCENT", 10),
 	}
@@ -177,36 +170,66 @@ func battleOutcome(team, final int) string {
 	}
 }
 
+// forOutcome is what a result pays: credits and ship XP (also the rank XP
+// base, see rankXP).
 func (r battleRewards) forOutcome(outcome string, kills int32, fleetType int) (credits, xp int32) {
-	c, x := r.poolsFor(outcome, kills, fleetType)
-	return c.total(), x.total()
+	p := r.poolsFor(outcome, kills, fleetType)
+	return p.creditTotal(), p.shipXP.total()
 }
 
 // rewardPools is a payout split the way the client's end-of-match screen
-// shows it: one amount per EYXPPoolType (registration 0x6A3CFE):
+// shows it, 13 entries. The two currencies use DIFFERENT pool enums (names
+// in registration order, verified in the exe 2026-11-14):
 //
-//	0 Scoring  1 ScoringBase  2 ScoringPerformance  3 BoosterWin
-//	4 BoosterFirstWinOfTheDay  5 GoldMembership  6 TeammatesGoldMembership
-//	7 BattleReadyRecruit  8 BattleReadyVeteran  9 BattleReadyLegendary
-//	10 FreeXPFleetBonus  11 FreeXPFleetBonusBoosted  12 None
+//	EYXPPoolType (ship XP, free XP):
+//	  0 Scoring  1 ScoringBase  2 ScoringPerformance  3 BoosterWin
+//	  4 BoosterFirstWinOfTheDay  5 GoldMembership  6 TeammatesGoldMembership
+//	  7 BattleReadyRecruit  8 BattleReadyVeteran  9 BattleReadyLegendary
+//	  10 FreeXPFleetBonus  11 FreeXPFleetBonusBoosted  12 None
+//	EYCreditsPoolType (credits):
+//	  0 RankUp  1 Scoring  2 ScoringBase  3 ScoringPerformance  4 Quest
+//	  5 BoosterWin  6 BoosterFirstWinOfTheDay  7 GoldMembership
+//	  8 TeammatesGoldMembership  9-11 BattleReady Recruit/Veteran/Legendary
+//	  12 None
 //
-// The client allocates 13 (0x0D) entries and totals every pool except 1-2
-// (the breakdown of 0) and 10-11 (0x3FAFA0), so Scoring carries base +
-// performance. The operator's formula maps onto it: Intermediate = base +
-// performance -> pools 1, 2 and 0; the bonus terms -> 5 (1.25 XP / 0.75
-// credits) and 6 (0.25); the fleet battle bonus -> 7/8/9 by fleet type.
-// GUESS: which named pool each operator term is (the numbers fit Gold /
-// Teammates-gold / BattleReady; nothing states it); EliteTeam% and any extra
-// bonus term go to 3 (BoosterWin).
+// CHANGED 2026-11-14: credits were written in the XP order, so the screen
+// read our Scoring as RankUp (not counted) and every booster one line off.
+// The client's credit total (GatherEomReward 0x340C40, FUN_1405b7ab0) is
+// every entry but 2-3 (the breakdown of Scoring), less RankUp and Quest,
+// and counts each booster line only when that booster is active for the
+// player (ClientSetActiveBoosterIDs, sent by battle-server-mod from
+// booster_ids=); the XP total is every entry but 1-2 and 10-11 (0x3FAFA0).
 const rewardPoolCount = 13
 
 type rewardPools [rewardPoolCount]int32
 
-// total is what the player is paid: every pool the client sums.
-func (p rewardPools) total() int32 {
+// poolLayout is where each line goes in one pool enum.
+type poolLayout struct {
+	scoring, base, performance, win, firstWin, gold, teamGold int
+	battleReady                                               [3]int // Recruit, Veteran, Legendary
+	notCounted                                                []int  // entries the total leaves out
+}
+
+var xpPoolLayout = poolLayout{scoring: 0, base: 1, performance: 2, win: 3, firstWin: 4, gold: 5, teamGold: 6,
+	battleReady: [3]int{7, 8, 9}, notCounted: []int{1, 2, 10, 11}}
+
+var creditPoolLayout = poolLayout{scoring: 1, base: 2, performance: 3, win: 5, firstWin: 6, gold: 7, teamGold: 8,
+	battleReady: [3]int{9, 10, 11}, notCounted: []int{2, 3}}
+
+// matchPools is one result's three currencies.
+type matchPools struct {
+	credits, shipXP, freeXP rewardPools
+}
+
+// total is what the player is paid in one currency.
+func (p rewardPools) total(layout ...poolLayout) int32 {
+	l := xpPoolLayout
+	if len(layout) > 0 {
+		l = layout[0]
+	}
 	var t int32
 	for i, v := range p {
-		if i == 1 || i == 2 || i == 10 || i == 11 {
+		if containsInt(l.notCounted, i) {
 			continue
 		}
 		t += v
@@ -214,13 +237,20 @@ func (p rewardPools) total() int32 {
 	return t
 }
 
-// freeXPOf is the free XP a match's XP pays.
-func (r battleRewards) freeXPOf(xp int32) int32 {
-	return int32(math.Round(float64(xp) * float64(r.freeXPPct) / 100))
+func containsInt(list []int, v int) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
-// scaled is p with every pool multiplied by pct/100, rounding differences
-// going to pool 0 so the counted total is exactly want.
+// creditTotal is a credit pool array's total (its own layout).
+func (p matchPools) creditTotal() int32 { return p.credits.total(creditPoolLayout) }
+
+// scaled is p (an XP layout) with every pool multiplied by pct/100, rounding
+// differences going to pool 0 so the counted total is exactly want.
 func (p rewardPools) scaled(pct int32, want int32) rewardPools {
 	var q rewardPools
 	for i, v := range p {
@@ -231,11 +261,20 @@ func (p rewardPools) scaled(pct int32, want int32) rewardPools {
 }
 
 // unplayedShipPools is what each fleet ship that was not flown earns: the
-// match's XP pools without the performance part, scaled to unplayedShipXPPct.
+// match's ship XP pools without the performance part, scaled to
+// unplayedShipXPPct.
 func (r battleRewards) unplayedShipPools(outcome string, fleetType int) rewardPools {
-	_, base := r.poolsFor(outcome, 0, fleetType)
+	base := r.poolsFor(outcome, 0, fleetType).shipXP
 	want := int32(math.Round(float64(base.total()) * float64(r.unplayedShipXPPct) / 100))
 	return base.scaled(r.unplayedShipXPPct, want)
+}
+
+// rankXP is the rank (reputation) XP of a result: the ship XP without the
+// Elite lines -- Elite Status has no reputation effect (boosters.go).
+// GUESS: rank XP otherwise followed the whole match XP before 2026-11-14 and
+// still does; the game's own reputation boost is First Win of the Day's.
+func rankXP(ship rewardPools) int32 {
+	return ship.total() - ship[xpPoolLayout.gold] - ship[xpPoolLayout.teamGold]
 }
 
 func (p rewardPools) csv() string {
@@ -246,7 +285,7 @@ func (p rewardPools) csv() string {
 	return strings.Join(parts, ",")
 }
 
-func (r battleRewards) poolsFor(outcome string, kills int32, fleetType int) (credits, xp rewardPools) {
+func (r battleRewards) poolsFor(outcome string, kills int32, fleetType int) matchPools {
 	if kills < 0 {
 		kills = 0
 	}
@@ -257,45 +296,75 @@ func (r battleRewards) poolsFor(outcome string, kills int32, fleetType int) (cre
 	if outcome == "win" {
 		baseCredits, baseXP = r.winCredits, r.winXP
 	}
-	credits = r.split(baseCredits, r.killCredits*kills+r.ribbonCredits, r.creditBonuses, fleetType)
+	xpPerf := r.killXP * kills
 	if r.useEventXP {
 		// All of it as base: the event XP is not split into a win/loss base
 		// and a kill performance, and unplayedShipPools takes its share of
 		// the base.
-		return credits, r.split(r.eventXP, 0, r.xpBonuses, fleetType)
+		baseXP, xpPerf = r.eventXP, 0
 	}
-	xp = r.split(baseXP, r.killXP*kills, r.xpBonuses, fleetType)
-	return credits, xp
+	xpBase, xpPerfScaled := scaledParts(baseXP, xpPerf, r.xpScale)
+	freeBase, freePerf := scaledParts(xpBase, xpPerfScaled, float64(r.freeXPPct)/100)
+	crBase, crPerf := scaledParts(baseCredits, r.killCredits*kills+r.ribbonCredits, r.creditScale)
+	return matchPools{
+		credits: r.boost(crBase, crPerf, boostedCredits, outcome, fleetType, creditPoolLayout),
+		shipXP:  r.boost(xpBase, xpPerfScaled, boostedShipXP, outcome, fleetType, xpPoolLayout),
+		freeXP:  r.boost(freeBase, freePerf, boostedFreeXP, outcome, fleetType, xpPoolLayout),
+	}
 }
 
-// split builds the pools for one currency. The total is the formula rounded
-// once; per-pool rounding differences go to the fleet pool, so the pools
-// always add up to exactly what is paid.
-func (r battleRewards) split(base, performance int32, bonuses []float64, fleetType int) rewardPools {
+// scaledParts scales a base and a performance part, rounding their sum once
+// so the breakdown adds up to the Scoring line.
+func scaledParts(base, performance int32, scale float64) (int32, int32) {
+	b := int32(math.Round(float64(base) * scale))
+	sum := int32(math.Round(float64(base+performance) * scale))
+	return b, sum - b
+}
+
+// boost lays out one currency: the Scoring line (base + performance, with
+// its breakdown) and each booster the result earns as base x (multiplier -
+// 1) in its own line.
+func (r battleRewards) boost(base, performance, currency int32, outcome string, fleetType int, l poolLayout) rewardPools {
 	var p rewardPools
-	intermediate := base + performance
-	p[0], p[1], p[2] = intermediate, base, performance
-	part := func(f float64) int32 { return int32(math.Round(float64(intermediate) * f)) }
-	for i, b := range bonuses {
-		switch i {
-		case 0:
-			p[5] += part(b)
-		case 1:
-			p[6] += part(b)
-		default:
-			p[3] += part(b)
+	scoring := base + performance
+	p[l.scoring], p[l.base], p[l.performance] = scoring, base, performance
+	part := func(f float64) int32 { return int32(math.Round(float64(scoring) * f)) }
+	if outcome == "win" {
+		p[l.win] = part(commonBooster(boosterTypeWin).bonus(currency, boostSelf))
+		if r.boosts.firstWin {
+			p[l.firstWin] = part(commonBooster(boosterTypeFirstWin).bonus(currency, boostSelf))
 		}
 	}
-	p[3] += part(r.eliteTeamPct / 100)
+	if r.boosts.elite {
+		p[l.gold] = part(goldMembership.bonus(currency, boostSelf))
+	}
+	if r.boosts.eliteAllies > 0 {
+		p[l.teamGold] = part(goldMembership.bonus(currency, boostTeammates) * float64(r.boosts.eliteAllies))
+	}
 	ft := fleetType
 	if ft < 1 || ft > 3 {
 		ft = 1
 	}
-	fleetPool := 6 + ft // 7 Recruit, 8 Veteran, 9 Legendary
-	p[fleetPool] += part(r.fleetBonus(fleetType))
-	want := int32(math.Round(float64(intermediate) * r.multiplier(bonuses, fleetType)))
-	p[fleetPool] += want - p.total()
+	p[l.battleReady[ft-1]] = part(battleReadyBooster(ft).bonus(currency, boostSelf))
 	return p
+}
+
+// activeBoosterIDs is what battle-server-mod sends the player as
+// ClientSetActiveBoosterIDs: the boosters this result earned. The rewards
+// screen counts and labels a booster line only for an id listed here
+// (0x345980 sets the flag of each listed id's booster type).
+func (r battleRewards) activeBoosterIDs(outcome string, fleetType int) []int32 {
+	var ids []int32
+	if outcome == "win" {
+		ids = append(ids, boosterIDWin)
+		if r.boosts.firstWin {
+			ids = append(ids, boosterIDFirstWin)
+		}
+	}
+	if r.boosts.elite {
+		ids = append(ids, boosterIDGoldMembership)
+	}
+	return append(ids, battleReadyBooster(fleetType).id)
 }
 
 func battleResultHandler(w http.ResponseWriter, r *http.Request) {
@@ -351,6 +420,10 @@ func battleResultHandler(w http.ResponseWriter, r *http.Request) {
 		eomXP, scoringMode = endOfMatchEventXP(currentMmogPlayerStateDB(), match)
 		rewards = rewards.withEventXP(eventXP + eomXP + ribbonXP)
 	}
+	// Elite Status, elite allies and First Win of the Day (boosters.go).
+	// Read before recordBattleResult: the store has one connection.
+	boosts, eliteShare := battleBoosts(currentMmogPlayerStateDB(), res, time.Now())
+	rewards = rewards.withBoosts(boosts)
 	credits, xp, gains, fresh, err := recordBattleResult(res, rewards)
 	if err != nil {
 		logrus.WithError(err).WithFields(logrus.Fields{"match": match, "player": pid}).Error("battle result: not recorded")
@@ -393,29 +466,38 @@ func battleResultHandler(w http.ResponseWriter, r *http.Request) {
 		"deaths": res.deaths, "credits": credits, "xp": xp, "ships": res.ships, "new": fresh,
 		"event_xp": eventXP, "eom_xp": eomXP, "scoring_mode": scoringMode, "events": q.Get("events"),
 		"event_credits": q.Get("event_credits"), "ribbons": ribbons, "ribbon_xp": ribbonXP, "ribbon_credits": ribbonCR, "paid_event_credits": paidEventCR,
-		"event_counts": scoringEventNames(eventCounts)}).Info("battle result")
+		"event_counts": scoringEventNames(eventCounts), "elite": boosts.elite, "elite_allies": boosts.eliteAllies,
+		"first_win": boosts.firstWin}).Info("battle result")
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = fmt.Fprintf(w, "outcome=%s\ncredits=%d\nxp=%d\nnew=%v\n", res.outcome, credits, xp, fresh)
 	// The same payout split into pools, for the end-of-match screen: the mod
 	// writes these into the player's m_creditsInfo / m_matchXPInfo (the data
 	// the missing server build used to fill), so the screen shows what was
 	// paid. See rewardPools.
-	creditPools, xpPools := rewards.poolsFor(res.outcome, res.kills, fleetType)
+	pools := rewards.poolsFor(res.outcome, res.kills, fleetType)
 	flown := flownFleetShipIDs(res.pid, res.ships)
-	shipPools := xpPools
+	shipPools := pools.shipXP
 	if len(flown) > 1 {
 		for i := range shipPools {
 			shipPools[i] /= int32(len(flown))
 		}
 	}
-	// xp_pools become the screen's FREE XP (m_matchXPInfo.m_freeXP): the
-	// free share of the match XP, not all of it. Ship XP keeps the full split.
-	freePools := xpPools.scaled(rewards.freeXPPct, rewards.freeXPOf(xpPools.total()))
-	// unplayed_ship_xp_pools is what every fleet ship NOT flown earned (see
-	// unplayedShipXPPct); the mod shows it on those ships, which read 0 before.
+	// credit_pools are in EYCreditsPoolType order, xp_pools (the screen's
+	// FREE XP, m_matchXPInfo.m_freeXP) and the ship pools in EYXPPoolType
+	// order (rewardPools). unplayed_ship_xp_pools is what every fleet ship
+	// NOT flown earned (see unplayedShipXPPct).
 	_, _ = fmt.Fprintf(w, "credit_pools=%s\nxp_pools=%s\nship_xp_pools=%s\nunplayed_ship_xp_pools=%s\nfleet_ships=%s\nflown_ships=%s\n",
-		creditPools.csv(), freePools.csv(), shipPools.csv(), rewards.unplayedShipPools(res.outcome, fleetType).csv(),
+		pools.credits.csv(), pools.freeXP.csv(), shipPools.csv(), rewards.unplayedShipPools(res.outcome, fleetType).csv(),
 		joinInt32s(battleFleetShipIDs(res.pid, fleetType)), joinInt32s(flown))
+	// booster_ids= / elite_share= are what the mod sends the player as
+	// ClientSetActiveBoosterIDs (PRI+0x7B8) and ClientSetEliteSharePlayers
+	// (PRI+0x790; its count +0x798 is the "Elite from Team" multiplier): the
+	// rewards screen counts and labels a booster line only when its booster
+	// is listed, and shows the elite allies by name ("Includes Elite Bonus
+	// from {0}"). The original server build sent both; nothing in this exe
+	// does (2026-11-14).
+	_, _ = fmt.Fprintf(w, "booster_ids=%s\nelite_share=%s\n",
+		joinInt32s(rewards.activeBoosterIDs(res.outcome, fleetType)), strings.Join(eliteShare, ","))
 }
 
 type battleResult struct {
@@ -438,7 +520,8 @@ func recordBattleResult(res battleResult, rewards battleRewards) (credits, xp in
 		return 0, 0, nil, false, err
 	}
 	res.fleetType = matchFleetType(database, res.match)
-	credits, xp = rewards.forOutcome(res.outcome, res.kills, res.fleetType)
+	pools := rewards.poolsFor(res.outcome, res.kills, res.fleetType)
+	credits, xp = pools.creditTotal(), pools.shipXP.total()
 
 	// Ship XP goes to the hulls actually flown, resolved to pawn ids the way
 	// player_ship_xp keys them, and a smaller share to the rest of the fleet.
@@ -471,7 +554,7 @@ func recordBattleResult(res battleResult, rewards battleRewards) (credits, xp in
 	if n, _ := ins.RowsAffected(); n == 0 {
 		return credits, xp, nil, false, nil // already paid
 	}
-	if err := grantBattleRewards(tx, res.pid, credits, xp, rewards.freeXPOf(xp), ships, unplayed, unplayedXP); err != nil {
+	if err := grantBattleRewards(tx, res.pid, credits, rankXP(pools.shipXP), xp, pools.freeXP.total(), ships, unplayed, unplayedXP); err != nil {
 		return 0, 0, nil, false, err
 	}
 	return credits, xp, gains, true, tx.Commit()
@@ -598,6 +681,97 @@ func flownFleetShipIDs(pid string, loadoutIDs []string) []int32 {
 	return ids
 }
 
+// battleBoosts is which player-specific boosters a result earns, and the
+// names of the elite allies (for ClientSetEliteSharePlayers).
+//
+// Elite: the player's membership was active (player_membership). Elite
+// allies: the other players of the match on the player's team (the team the
+// host reported, else the matchmaker's) whose membership was active -- the
+// asset's YBTT_TEAMMATES, "Allies who join you in battle will also receive a
+// small bonus ... Go into battle together with other Elite Status Captains
+// to stack the bonuses"; the client multiplies the ally percentage by their
+// number (0x340C40 x PRI+0x798). Players come from the matchmaker's slots
+// (deleted as each player leaves) and the results already reported, so an
+// ally who left before the end still counts if their result is in.
+// First win: no won match since the daily reset (contractPeriodStart).
+// GUESS: the original's day boundary for First Win of the Day is not in
+// the client; the daily contracts' reset is used.
+func battleBoosts(database *sql.DB, res battleResult, now time.Time) (matchBoosts, []string) {
+	var b matchBoosts
+	if database == nil {
+		return b, nil
+	}
+	b.elite = int64(membershipExpiresAt(res.pid)) > now.Unix()
+	if res.outcome == "win" {
+		var wins int
+		_ = database.QueryRow(`SELECT COUNT(*) FROM battle_results WHERE user_id=? AND outcome='win' AND match_id!=? AND created_at>=?`,
+			res.pid, res.match, contractPeriodStart(now).UTC().Format("2006-01-02 15:04:05")).Scan(&wins)
+		b.firstWin = wins == 0
+	}
+	battleID := res.match
+	if i := strings.LastIndex(battleID, "-r"); i > 0 {
+		if _, err := strconv.Atoi(battleID[i+2:]); err == nil {
+			battleID = battleID[:i]
+		}
+	}
+	teams := map[string]int{}
+	if rows, err := database.Query(`SELECT s.user_id, s.team FROM match_slots s JOIN matches m ON m.id=s.match_id
+		WHERE m.battle_match_id=? AND m.battle_match_id!=''`, battleID); err == nil {
+		for rows.Next() {
+			var id string
+			var team int
+			if rows.Scan(&id, &team) == nil {
+				teams[id] = team
+			}
+		}
+		_ = rows.Close()
+	}
+	// The host's own report wins over the matchmaker's slot.
+	if rows, err := database.Query(`SELECT user_id, team FROM battle_results WHERE match_id=? AND team>0`, res.match); err == nil {
+		for rows.Next() {
+			var id string
+			var team int
+			if rows.Scan(&id, &team) == nil {
+				teams[id] = team
+			}
+		}
+		_ = rows.Close()
+	}
+	team := res.team
+	if team < 1 {
+		team = teams[res.pid]
+	}
+	if team < 1 {
+		return b, nil
+	}
+	var allies []string
+	for id, t := range teams {
+		if id != res.pid && t == team {
+			allies = append(allies, id)
+		}
+	}
+	sort.Strings(allies)
+	var names []string
+	for _, id := range allies {
+		if int64(membershipExpiresAt(id)) <= now.Unix() {
+			continue
+		}
+		b.eliteAllies++
+		var name string
+		_ = database.QueryRow(`SELECT display_name FROM player_state WHERE user_id=?`, id).Scan(&name)
+		// One line, comma-separated: names cannot hold a comma (the rename
+		// pattern) but an old one might. An ally without a name is still
+		// listed (empty): the screen multiplies the ally bonus by the
+		// number of entries.
+		name = strings.TrimSpace(strings.NewReplacer(",", " ", "\n", " ", "\r", " ").Replace(name))
+		if name == "Local" {
+			name = ""
+		}
+		names = append(names, name)
+	}
+	return b, names
+}
+
 func joinInt32s(v []int32) string {
 	parts := make([]string, len(v))
 	for i, x := range v {
@@ -606,14 +780,17 @@ func joinInt32s(v []int32) string {
 	return strings.Join(parts, ",")
 }
 
-func grantBattleRewards(tx *sql.Tx, pid string, credits, xp, freeXP int32, ships, unplayed []int32, unplayedXP int32) error {
+// grantBattleRewards pays a result: credits, rank XP (gained), ship XP xp
+// split over the ships flown, free XP, and unplayedXP to each unflown fleet
+// ship.
+func grantBattleRewards(tx *sql.Tx, pid string, credits, gained, xp, freeXP int32, ships, unplayed []int32, unplayedXP int32) error {
 	var currentXP, rank, rankXP int32
 	if err := tx.QueryRow(`SELECT current_xp, current_rank, rank_xp FROM player_state WHERE user_id=?`, pid).
 		Scan(&currentXP, &rank, &rankXP); err != nil {
 		return err
 	}
 	// Rank progression with the same thresholds as /internal/progression.
-	rankXP += xp
+	rankXP += gained
 	for {
 		threshold := handlers.RankXPThreshold(rank + 1)
 		if threshold <= 0 || rankXP < threshold {
@@ -624,7 +801,7 @@ func grantBattleRewards(tx *sql.Tx, pid string, credits, xp, freeXP int32, ships
 	}
 	if _, err := tx.Exec(`UPDATE player_state SET soft_currency=soft_currency+?, free_xp=free_xp+?,
 		current_xp=current_xp+?, current_rank=?, rank_xp=?, updated_at=datetime('now') WHERE user_id=?`,
-		credits, freeXP, xp, rank, rankXP, pid); err != nil {
+		credits, freeXP, gained, rank, rankXP, pid); err != nil {
 		return err
 	}
 	addShipXP := func(ship, amount int32) error {

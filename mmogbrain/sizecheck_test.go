@@ -74,7 +74,12 @@ var targetSizes = map[string]int{
 	// "result") are gone -- this reply's parser (0x2A6B7F0) reads neither --
 	// and the contract state fields are strings like on the player object.
 	"YA_GetDailyContractsData": 4448,
-	"YA_GetBoosterData":        1856,
+	// 1856 -> 4047 (+2191, 2026-11-14): the game's own boosters (boosters.go)
+	// instead of invented ones -- every effect carries its Scoring pool, the
+	// common boosters have 2-4 effects each, and GoldMembershipTable holds
+	// Elite Status (6 effects) instead of nothing (its reader is the same
+	// booster parser, FUN_142a65fe0 -> FUN_142a66500).
+	"YA_GetBoosterData": 4047,
 	// 382 -> 1257 (+875): one progress entry per goal of the rebuilt careers.
 	"YA_GetCareerProgression": 1257,
 	// 277 -> 265 (-12): root "result" is now the ARRAY of {GameMode, TimeSpan,
