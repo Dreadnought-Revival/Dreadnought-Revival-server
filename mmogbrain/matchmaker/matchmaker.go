@@ -341,6 +341,9 @@ type Matchmaker struct {
 	// BackfillWindow lets waiting players join a running match that started
 	// less than this ago instead of starting a new one (backfill.go). 0 = off.
 	BackfillWindow time.Duration
+	// BackfillModes are the game modes (as run, e.g. "TDM") whose running
+	// matches take late joiners; a mode not listed never backfills.
+	BackfillModes map[string]bool
 	// seenInstance remembers which instance ids the control plane has ever
 	// answered a 200 for. Without it a 404 cannot be read: it means "the host
 	// is gone" on dn-dedicated and "there is no such route" on game-manager,

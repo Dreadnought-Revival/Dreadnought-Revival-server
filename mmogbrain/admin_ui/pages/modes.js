@@ -75,6 +75,11 @@
     flag('custom_game', 'Custom Game tile', sel([['1', 'Listed'], ['0', 'Hidden']], '1'), (v) => v === '1');
     flag('max_players', d.autoscale ? 'Max players per match' : 'Players per match (fixed)', el('input', { type: 'number', min: '1', max: String(d.max_players_max), step: '1' }), (v) => Math.trunc(Number(v)));
     flag('max_wait_s', 'Max wait for idle players (s)', el('input', { type: 'number', min: '0', max: String(d.max_wait_s_max), step: '1' }), (v) => Math.trunc(Number(v)));
+    if (d.backfill_modes) {
+      sw.append(el('div', { class: 'muted' }, d.backfill_window_s > 0 && d.backfill_modes.length
+        ? 'Joining a running match: on for ' + d.backfill_modes.join(', ') + ', in the first ' + d.backfill_window_s + ' s of a match (DN_MATCH_BACKFILL_WINDOW / DN_MATCH_BACKFILL_MODES).'
+        : 'Joining a running match: off (DN_MATCH_BACKFILL_WINDOW / DN_MATCH_BACKFILL_MODES).'));
+    }
     if (!sw.children.length) sw.append(el('div', { class: 'muted' }, 'The matchmaker is not running: its switches are not available.'));
     refreshBar();
   }

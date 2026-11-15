@@ -169,6 +169,12 @@ func adminModesJSON() map[string]any {
 		out["max_wait_s"] = adminSwitch{Value: int(wait / time.Second), Env: int(envMatchSizing.wait / time.Second), Dashboard: set[flagMatchMaxWait]}
 		out["autoscale"] = mm.AutoScaled()
 		out["backfill_window_s"] = int(mm.BackfillWindow / time.Second)
+		backfillModes := []string{}
+		for mode := range mm.BackfillModes {
+			backfillModes = append(backfillModes, mode)
+		}
+		sort.Strings(backfillModes)
+		out["backfill_modes"] = backfillModes
 	}
 	return out
 }

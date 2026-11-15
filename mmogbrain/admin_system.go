@@ -83,6 +83,7 @@ var systemConfigValues = []string{
 	"DN_MATCH_MAX_WAIT",        // autoscale wait, a duration
 	"DN_MATCH_AUTOSCALE",       // "0" = fixed size
 	"DN_MATCH_BACKFILL_WINDOW", // a duration
+	"DN_MATCH_BACKFILL_MODES",  // mode codes such as TDM,Onslaught,BC
 	"DN_ESCALATION_QUEUE",      // a queue/mode code such as BC
 	"DN_TLS_SHA384",            // off / all
 	"DN_CHAT_FILTER",           // "0" = off

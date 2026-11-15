@@ -29,6 +29,7 @@ func TestBackfillJoinsARunningMatch(t *testing.T) {
 	database := pvpTestDB(t)
 	m, spawns := pvpMatchmaker(t, database, 10)
 	m.BackfillWindow = 3 * time.Minute
+	m.BackfillModes = map[string]bool{"TDM": true}
 	addRunningMatch(t, m, "running", "TDM", 1, 40*time.Second, true, map[string]int{"first": 1})
 	queuePlayer(t, database, "q1", "second", "TDM", time.Now().UTC().Format(time.RFC3339))
 
@@ -79,6 +80,7 @@ func TestBackfillOnlyIntoAFittingMatch(t *testing.T) {
 			database := pvpTestDB(t)
 			m, _ := pvpMatchmaker(t, database, c.capacity)
 			m.BackfillWindow = 3 * time.Minute
+			m.BackfillModes = map[string]bool{"TDM": true}
 			addRunningMatch(t, m, "running", "TDM", c.fleet, c.age, c.ready, c.slots)
 			queuePlayer(t, database, "q1", "new", "TDM", time.Now().UTC().Format(time.RFC3339))
 			if placed, err := m.backfill("TDM", 1, 1); err != nil || placed != 0 {
@@ -93,6 +95,7 @@ func TestBackfillKeepsASquadTogether(t *testing.T) {
 	database := pvpTestDB(t)
 	m, _ := pvpMatchmaker(t, database, 4)
 	m.BackfillWindow = 3 * time.Minute
+	m.BackfillModes = map[string]bool{"TDM": true}
 	addRunningMatch(t, m, "running", "TDM", 1, 30*time.Second, true, map[string]int{"a": 1, "b": 2})
 	now := time.Now().UTC().Format(time.RFC3339)
 	queueParty(t, database, "q1", "leader", "sq", now)
@@ -110,5 +113,59 @@ func TestBackfillKeepsASquadTogether(t *testing.T) {
 	queueParty(t, database, "q4", "y", "sq2", now)
 	if placed, _ := m.backfill("TDM", 1, 1); placed != 0 {
 		t.Errorf("placed %d into a full match", placed)
+	}
+}
+
+// Only the listed modes take late joiners: a round or wave mode has no way to
+// take one in yet.
+func TestBackfillOnlyInListedModes(t *testing.T) {
+	database := pvpTestDB(t)
+	m, _ := pvpMatchmaker(t, database, 10)
+	m.BackfillWindow = 3 * time.Minute
+	m.BackfillModes = map[string]bool{"TDM": true}
+	addRunningMatch(t, m, "te", "TE", 1, 30*time.Second, true, map[string]int{"a": 1})
+	addRunningMatch(t, m, "tdm", "TDM", 1, 30*time.Second, true, map[string]int{"b": 1})
+	now := time.Now().UTC().Format(time.RFC3339)
+	queuePlayer(t, database, "q1", "late-te", "TE", now)
+	queuePlayer(t, database, "q2", "late-tdm", "TDM", now)
+	if placed, err := m.backfill("TE", 1, 1); err != nil || placed != 0 {
+		t.Errorf("TE: placed %d (err %v), want 0", placed, err)
+	}
+	if placed, err := m.backfill("TDM", 1, 1); err != nil || placed != 1 {
+		t.Errorf("TDM: placed %d (err %v), want 1", placed, err)
+	}
+}
+
+// A match that has reported a result is over, even while its host is still
+// up: nobody is sent into it. A later round on the same host counts too.
+func TestBackfillSkipsAMatchWithAResult(t *testing.T) {
+	for _, resultID := range []string{"dn-match-7", "dn-match-7-r2"} {
+		t.Run(resultID, func(t *testing.T) {
+			database := pvpTestDB(t)
+			m, _ := pvpMatchmaker(t, database, 10)
+			m.BackfillWindow = 3 * time.Minute
+			m.BackfillModes = map[string]bool{"TDM": true}
+			addRunningMatch(t, m, "running", "TDM", 1, 30*time.Second, true, map[string]int{"a": 1})
+			if _, err := database.Exec(`UPDATE matches SET battle_match_id='dn-match-7' WHERE id='running'`); err != nil {
+				t.Fatal(err)
+			}
+			queuePlayer(t, database, "q1", "late", "TDM", time.Now().UTC().Format(time.RFC3339))
+			// Another match's result changes nothing.
+			if _, err := database.Exec(`INSERT INTO battle_results(match_id,user_id) VALUES('dn-match-70','z')`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := database.Exec(`INSERT INTO battle_results(match_id,user_id) VALUES(?,'a')`, resultID); err != nil {
+				t.Fatal(err)
+			}
+			if placed, err := m.backfill("TDM", 1, 1); err != nil || placed != 0 {
+				t.Errorf("placed %d (err %v) into a finished match", placed, err)
+			}
+			if _, err := database.Exec(`DELETE FROM battle_results WHERE match_id=?`, resultID); err != nil {
+				t.Fatal(err)
+			}
+			if placed, err := m.backfill("TDM", 1, 1); err != nil || placed != 1 {
+				t.Errorf("placed %d (err %v), want 1 once only another match has a result", placed, err)
+			}
+		})
 	}
 }

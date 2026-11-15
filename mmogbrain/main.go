@@ -428,18 +428,28 @@ func newRouter(h *handlers.Handler, secret []byte, adminKey, internalAPIKey stri
 // two private ones. DN_MATCH_AUTOSCALE=0 restores the fixed size.
 func configureMatchAutoscale(mm *matchmaker.Matchmaker, log *logrus.Logger) {
 	// Backfill (matchmaker/backfill.go): join a running match of the same
-	// mode and fleet before starting a new one. DN_MATCH_BACKFILL_WINDOW sets
-	// how young the match must be (e.g. 3m). OFF by default since 2026-10-03:
-	// none of the 11 backfilled joins of its first day ever picked a ship (no
-	// "player loadout" line on the host, though they logged in, got a team
-	// and a bot's place), and a squad that arrived after the bots spawned was
-	// refused outright ("No Available PlayerStart Found!"). Late joiners need
-	// a ship selection the host does not give them yet.
-	mm.BackfillWindow = 0
+	// mode and fleet before starting a new one. DN_MATCH_BACKFILL_WINDOW is
+	// how young the match must be (default 3m, GUESS; 0 = off) and
+	// DN_MATCH_BACKFILL_MODES which modes take late joiners (default
+	// TDM,Onslaught,BC: the modes where mid-match joins were seen to work).
+	// It was off from 2026-10-03 to 2026-11-15: a late joiner gets no ship
+	// selection, the host spawns the active loadout at once, and it had
+	// none until the mod's flagship drop-in.
+	mm.BackfillWindow = 3 * time.Minute
 	if v, err := time.ParseDuration(os.Getenv("DN_MATCH_BACKFILL_WINDOW")); err == nil && v >= 0 {
 		mm.BackfillWindow = v
 	}
-	log.WithField("window", mm.BackfillWindow).Info("matchmaker: backfill of running matches")
+	modes := "TDM,Onslaught,BC"
+	if v, ok := os.LookupEnv("DN_MATCH_BACKFILL_MODES"); ok {
+		modes = v
+	}
+	mm.BackfillModes = map[string]bool{}
+	for _, mode := range strings.Split(modes, ",") {
+		if mode = strings.TrimSpace(mode); mode != "" {
+			mm.BackfillModes[mode] = true
+		}
+	}
+	log.WithFields(logrus.Fields{"window": mm.BackfillWindow, "modes": modes}).Info("matchmaker: backfill of running matches")
 	if os.Getenv("DN_MATCH_AUTOSCALE") == "0" {
 		log.WithField("players_per_match", mm.PlayersPerMatch).Info("matchmaker: fixed match size (DN_MATCH_AUTOSCALE=0)")
 		return

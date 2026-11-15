@@ -22,9 +22,20 @@ import (
 // server takes late joiners: it is not told who may join, and the mod's bot
 // balance gives a bot's place to each human who arrives.
 //
-// OFF by default (main.go): live, late joiners logged in but never got a
-// ship selection (0 of 11 picked a ship, 2026-10-03), and joiners after the
-// bots spawned found no PlayerStart. Unresolved; see main.go.
+// Which modes: only those in BackfillModes (main.go: TDM, Onslaught and BC by
+// default). A player who joins a running match gets no orbit and no ship
+// selection: the client reports ServerReadyForJoining with bFirstOrbitSpawn =
+// 0 and the host spawns the active loadout at once. The host had none, so the
+// first backfilled players (2026-10-03, 0 of 11) never got a ship. The
+// battle-server mod's flagship drop-in (2026-11-08) fills that: all 10
+// mid-match reconnects of 2026-11-11..15 spawned in their flagship, could
+// switch ships at the next respawn and got a result (seen in TDM, Onslaught
+// and BC). Not seen, so not listed: the round and wave modes (TE, Havoc) and
+// Conquest.
+//
+// A match that has reported a result is over even while its host is still
+// up (a player was sent into one two minutes after its end, 2026-11-13); it
+// takes nobody.
 //
 // GUESS: the window. The original game's join-in-progress rules are not
 // known; 3 minutes keeps a joiner well inside a ~10 minute match.
@@ -39,33 +50,46 @@ type backfillMatch struct {
 // backfill places the waiting parties of one queue bucket into running
 // matches. It returns how many players it placed.
 func (m *Matchmaker) backfill(gameMode string, tierMin, fleetType int) (int, error) {
-	if m.BackfillWindow <= 0 {
+	runMode := runnableGameMode(gameMode)
+	if m.BackfillWindow <= 0 || !m.BackfillModes[runMode] {
 		return 0, nil
 	}
 	groups, err := m.waitingGroups(gameMode, tierMin, fleetType)
 	if err != nil || len(groups) == 0 {
 		return 0, err
 	}
-	runMode := runnableGameMode(gameMode)
 	cutoff := time.Now().UTC().Add(-m.BackfillWindow).Format(time.RFC3339)
-	rows, err := m.DB.Query(`SELECT id FROM matches
+	rows, err := m.DB.Query(`SELECT id, battle_match_id FROM matches
 		WHERE status='active' AND game_mode=? AND fleet_type=? AND server_ready_at IS NOT NULL
 		  AND datetime(created_at) >= datetime(?)
 		ORDER BY created_at DESC`, runMode, fleetType, cutoff)
 	if err != nil {
 		return 0, err
 	}
-	var ids []string
+	var ids, battleIDs []string
 	for rows.Next() {
-		var id string
-		if rows.Scan(&id) == nil {
+		var id, battleID string
+		if rows.Scan(&id, &battleID) == nil {
 			ids = append(ids, id)
+			battleIDs = append(battleIDs, battleID)
 		}
 	}
 	_ = rows.Close()
-	// Team counts AFTER the rows are closed: one database connection.
+	// Results and team counts AFTER the rows are closed: one database
+	// connection.
 	var matches []*backfillMatch
-	for _, id := range ids {
+	for i, id := range ids {
+		if battleIDs[i] != "" {
+			// The mod reports a later round on the same host as "<id>-r<n>".
+			var results int
+			if err := m.DB.QueryRow(`SELECT COUNT(*) FROM battle_results WHERE match_id=? OR match_id LIKE ?||'-r%'`,
+				battleIDs[i], battleIDs[i]).Scan(&results); err != nil {
+				return 0, err
+			}
+			if results > 0 {
+				continue
+			}
+		}
 		bm := &backfillMatch{id: id, teams: map[int]int{}}
 		trows, err := m.DB.Query(`SELECT team, COUNT(*) FROM match_slots WHERE match_id=? GROUP BY team`, id)
 		if err != nil {
