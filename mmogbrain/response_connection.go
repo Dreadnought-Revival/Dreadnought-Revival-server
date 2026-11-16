@@ -297,6 +297,11 @@ type mmogConnState struct {
 	staticFleetDataReceived  bool
 	fleetEligibilityReceived bool
 	playerFleetsReceived     bool
+	// fleetsRequestID is the id of the client's latest YA_PlayerFleets request
+	// (fleetsRequestSeen once there was one), kept for refreshPlayerFleets.
+	fleetsRequestID   [16]byte
+	fleetsRequestType uint16
+	fleetsRequestSeen bool
 	// gatewayReadySignalled records that we have told the gateway the client
 	// has player data. Deliberately NOT set the moment we write the
 	// YA_PlayerGet response: the client processes HTTP callbacks well before
@@ -693,6 +698,9 @@ func processMmogAppFrames(log *logrus.Logger, conn net.Conn, remote string, fram
 				log.WithFields(logrus.Fields{"remote": remote, "pid": state.playerPID}).Info("mmog: deferring YA_GetTechTree until YA_PlayerGet is answered")
 				continue
 			}
+			if requestName == "YA_PlayerFleets" {
+				state.fleetsRequestID, state.fleetsRequestType, state.fleetsRequestSeen = frame.RequestID, frame.MsgType, true
+			}
 			if requestName == "YA_PlayerFleets" && !deferPlayerFleetsDisabled && !state.playerGetResponded {
 				state.pendingPlayerFleets = append(state.pendingPlayerFleets, frame)
 				log.WithFields(logrus.Fields{"remote": remote, "pid": state.playerPID}).Info("mmog: deferring YA_PlayerFleets until YA_PlayerGet is answered")
@@ -761,11 +769,8 @@ func processMmogAppFrames(log *logrus.Logger, conn net.Conn, remote string, fram
 			// after YA_PlayerFleets below; the client rebuilds its fleet list
 			// from it, so repeating it is harmless.
 			if (requestName == "YA_UnlockItem" || requestName == "YA_PurchaseItem") && isShipItem(firstMmogInt32Field(frame.Payload, "ItemID", "itemID", "itemId")) {
-				if pushID, err := uuid.NewRandom(); err == nil {
-					push := protocol.BuildResponseFrame(pushID, frame.MsgType, buildMmogFleetUpdatePush(state.playerPID))
-					if err := writeMmogAppResponse(log, conn, remote, pushID, "YA_FleetUpdate", push, appEncoder, encryptResponses, "fleet update push failed", "sent YA_FleetUpdate push after a ship unlock"); err != nil {
-						return err
-					}
+				if err := refreshPlayerFleets(log, conn, remote, appEncoder, encryptResponses, state, "a ship unlock"); err != nil {
+					return err
 				}
 			}
 			if requestName == "YA_PlayerFleets" {
@@ -1053,6 +1058,12 @@ func pushMatchProgress(log *logrus.Logger, conn net.Conn, remote string, msgType
 				continue
 			}
 			name := protocol.FirstStringField(payload, "RT")
+			if name == "YA_FleetUpdate" { // a ship granted outside this connection (bundle, admin)
+				if err := refreshPlayerFleets(log, conn, remote, appEncoder, encryptResponses, state, "a ship grant"); err != nil {
+					return err
+				}
+				continue
+			}
 			frame := protocol.BuildResponseFrame(pushID, msgType, payload)
 			if err := writeMmogAppResponse(log, conn, remote, pushID, name, frame, appEncoder, encryptResponses, "squad push failed", "sent squad push"); err != nil {
 				return err
@@ -1160,6 +1171,40 @@ func connectPushGateOpen(status mmogMatchmakingStatus) (bool, string) {
 		return true, "delay"
 	}
 	return false, ""
+}
+
+// refreshPlayerFleets makes the client take its fleet list again in the middle
+// of a session, so a fleet a new ship unlocks (unlockedFleets) shows without
+// a restart (player report 2026-11-16: Veteran stayed locked after buying
+// tier 3 ships until the game was restarted).
+//
+// The client has no push for fleets. Read in the exe 2026-11-16:
+//   - "YA_FleetUpdate", which this server pushed after a ship unlock since
+//     2026-09-30, is not a message the client handles: its response
+//     dispatcher (0x2A23440, chunk 0x2A236C2-0x2A31A32) compares 95 RT names
+//     and that is not one; the one reference to the string (0x2A4C970) is a
+//     REQUEST the client sends, with a SquadID. The push was ignored.
+//   - The client asks for its fleets itself only at login and when the
+//     hangar menu initialises (AYMenu::InitializeMenu -> 0x4B9A50 ->
+//     0x35A1A0 -> 0x2A1FC60), i.e. after a restart or a match.
+//   - The YA_PlayerFleets handler is picked by request id, not by name: the
+//     dispatcher compares the frame's 16-byte id with the id of the client's
+//     latest YA_PlayerFleets request (interface +0x3730, 0x2A263DB ->
+//     0x2A58550) and then parses "result" (0x2A77910) and fires the
+//     fleet-updated delegate (+0xA50). Only the request sender writes
+//     +0x3730; nothing clears it after a reply.
+//
+// So a second reply under that same request id runs the client's own fleet
+// handler again. GUESS: that the transport hands such a frame to the
+// dispatcher (pushes under ids the client never sent do arrive there). NOT
+// verified in a client.
+func refreshPlayerFleets(log *logrus.Logger, conn net.Conn, remote string, appEncoder *protocol.StreamCipher, encryptResponses bool, state *mmogConnState, why string) error {
+	if !state.fleetsRequestSeen || !state.playerGetResponded {
+		return nil // nothing asked yet: the login reply will carry the fleets
+	}
+	frame := buildMmogRequestResponseFrame(state.fleetsRequestID, state.fleetsRequestType, "YA_PlayerFleets", state.playerPID, nil)
+	log.WithFields(logrus.Fields{"remote": remote, "pid": state.playerPID, "why": why}).Info("mmog: fleets sent again under the client's last YA_PlayerFleets request id")
+	return writeMmogAppResponse(log, conn, remote, state.fleetsRequestID, "YA_PlayerFleets", frame, appEncoder, encryptResponses, "fleet refresh failed", "sent YA_PlayerFleets again after "+why)
 }
 
 func writeMmogAppResponse(log *logrus.Logger, conn net.Conn, remote string, requestID [16]byte, requestName string, response []byte, appEncoder *protocol.StreamCipher, encryptResponses bool, warnMsg string, infoMsg string) error {
