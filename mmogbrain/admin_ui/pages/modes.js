@@ -12,7 +12,8 @@
   function dirtyList() { return ctl.filter((c) => c.changed()); }
   function refreshBar() {
     const d = dirtyList();
-    ctl.forEach((c) => c.box && c.box.classList.toggle('md-dirty', c.changed()));
+    const dirtyBoxes = new Set(d.map((c) => c.box));
+    ctl.forEach((c) => c.box && c.box.classList.toggle('md-dirty', dirtyBoxes.has(c.box))); // several controls share a card
     $('md-bar').classList.toggle('hidden', !d.length);
     $('md-count').textContent = d.length ? `${d.length} unsaved change${d.length === 1 ? '' : 's'}` : '';
     $('md-list').textContent = d.map((c) => c.describe()).join(' · ');
@@ -37,12 +38,33 @@
     const cards = d.queues.map((q) => {
       const ts = q.team_size;
       const box = el('div', { class: 'panel md-card' });
-      let input = null;
+      let input = null; let teamCtl = null;
       if (ts) {
         input = el('input', { type: 'number', min: '1', max: String(d.max_team_size), step: '1', value: String(ts.value), 'aria-label': 'Max players per team, ' + q.queue });
         const c = control({ box, input, cur: String(ts.value), dashboard: ts.dashboard, envValue: String(ts.env), kind: 'team', mode: q.mode,
           label: `${modeName(q.queue)} team size`, showCur: String(ts.value), showNew: (v) => v, fromInput: (v) => Math.trunc(Number(v)) });
-        ctl.push(c); box.dataset.i = ctl.length - 1;
+        ctl.push(c); box.dataset.i = ctl.length - 1; teamCtl = c;
+      }
+      // Bots: percent of the game's own values, per hosted mode (bot_tuning.go).
+      let botRow = null;
+      if (q.bots && q.runs === q.mode) {
+        const lim = d.bot_limits || {};
+        const fields = [['aim', 'Aim error'], ['reaction', 'Reaction time'], ['abilities', 'Ability use']];
+        const inputs = {};
+        const row = el('div', { class: 'md-bots' });
+        fields.forEach(([key, text]) => {
+          const [lo, hi] = lim[key] || [0, 500];
+          const inp = el('input', { type: 'number', min: String(lo), max: String(hi), step: '5', value: String(q.bots[key]), 'aria-label': text + ' percent, ' + q.queue });
+          inputs[key] = inp;
+          ctl.push(control({ box, input: inp, cur: String(q.bots[key]), dashboard: false, kind: 'bot', mode: q.runs, field: key, inputs, lo, hi,
+            label: `${modeName(q.queue)} bots, ${text.toLowerCase()}`, showCur: q.bots[key] + '%', showNew: (v) => v + '%', fromInput: (v) => Math.trunc(Number(v)) }));
+          row.append(el('label', {}, text, inp, '%'));
+        });
+        const original = fields.every(([key]) => q.bots[key] === 100);
+        botRow = el('div', { class: 'md-team' }, el('div', { class: 'muted' }, 'Bots (100% = the original game)'), row,
+          el('span', { class: 'muted' }, original ? 'original' : ['set here ', el('a', { class: 'link', onclick: () => { fields.forEach(([key]) => { inputs[key].value = '100'; }); refreshBar(); } }, 'use original')]));
+      } else if (q.bots) {
+        botRow = el('div', { class: 'muted' }, 'Bots: tuned on the ' + modeName(q.runs) + ' card.');
       }
       const n = counts[q.mode] || 0;
       const isEsc = d.escalation_queue && d.escalation_queue.value === q.queue;
@@ -50,7 +72,8 @@
         el('div', { class: 'md-head' }, el('h3', {}, modeName(q.queue)), el('span', { class: 'muted mono' }, q.queue), el('span', { class: 'spacer' }),
           isEsc ? chip('Escalation runs here', 'warn') : null, q.runs !== q.queue ? chip('hosted as ' + modeName(q.runs)) : null),
         ts ? el('div', { class: 'md-team' }, el('label', {}, 'Max players per team', input),
-          el('span', { class: 'muted' }, ts.dashboard ? ['set here (default ' + ts.env + ') ', ctl[ctl.length - 1].defaultLink] : 'default')) : el('div', { class: 'muted' }, 'Lobby (Custom Game): not a queue, no team size.'),
+          el('span', { class: 'muted' }, ts.dashboard ? ['set here (default ' + ts.env + ') ', teamCtl.defaultLink] : 'default')) : el('div', { class: 'muted' }, 'Lobby (Custom Game): not a queue, no team size.'),
+        botRow,
         el('dl', { class: 'kv md-kv' }, el('dt', {}, 'Teams'), el('dd', {}, q.teams == null ? '—' : String(q.teams)),
           el('dt', {}, 'Max in a match'), el('dd', {}, q.max_players == null ? '—' : String(q.max_players)),
           el('dt', {}, 'Matches, 7 days'), el('dd', {}, fmt(n))));
@@ -85,10 +108,16 @@
   }
 
   async function save() {
-    const body = {}; const team_sizes = {}; const reset = [];
+    const body = {}; const team_sizes = {}; const reset = []; const bot_tuning = {};
     const bad = [];
     dirtyList().forEach((c) => {
       const resetting = c.reset && c.dashboard;
+      if (c.kind === 'bot') { // a mode's three values go together
+        const v = {}; Object.keys(c.inputs).forEach((k) => { v[k] = Math.trunc(Number(c.inputs[k].value)); });
+        bot_tuning[c.mode] = v;
+        if (!(c.value() >= c.lo && c.value() <= c.hi)) bad.push(c.label + ': ' + c.lo + ' to ' + c.hi);
+        return;
+      }
       if (c.kind === 'team') { team_sizes[c.mode] = resetting ? null : c.value(); if (!resetting && !(c.value() >= 1 && c.value() <= data.max_team_size)) bad.push(c.label + ': 1 to ' + data.max_team_size); }
       else if (resetting) reset.push(c.key);
       else {
@@ -99,9 +128,10 @@
     });
     if (bad.length) { $('md-msg').className = 'err'; $('md-msg').textContent = 'Out of range: ' + bad.join('; '); return; }
     if (Object.keys(team_sizes).length) body.team_sizes = team_sizes;
+    if (Object.keys(bot_tuning).length) body.bot_tuning = bot_tuning;
     if (reset.length) body.reset = reset;
     if (!dirtyList().length) return;
-    if (!confirm('Change these settings? They apply at once to matchmaking.\n\n' + dirtyList().map((c) => c.describe()).join('\n'))) return;
+    if (!confirm('Change these settings? They apply at once to matchmaking; bot settings apply to matches started from now on.\n\n' + dirtyList().map((c) => c.describe()).join('\n'))) return;
     const d = await act(() => postJSON('/modes', body), 'md-msg', 'Saved. A tile shows or hides at each player\'s next login.');
     if (d) render(d);
   }
@@ -116,12 +146,14 @@
       #page-modes .md-team { display: grid; gap: 4px; margin-bottom: 8px; }
       #page-modes .md-team label { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; }
       #page-modes .md-team input { width: 80px; }
+      #page-modes .md-bots { display: flex; gap: 10px; flex-wrap: wrap; }
+      #page-modes .md-bots input { width: 64px; }
       #page-modes .md-kv { font-size: 13px; }
       #page-modes .md-field { display: grid; gap: 4px; }
       #page-modes .md-field label { padding: 2px; border: 1px solid transparent; border-radius: 7px; }
       #page-modes .md-bar { position: sticky; bottom: 0; z-index: 2; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 10px 14px; background: var(--panel); border: 1px solid var(--warn); border-radius: 10px; box-shadow: 0 -2px 8px rgba(0,0,0,.12); }
     </style>
-    <div class="note">The queues the game offers, the mode their matches are hosted in, and how many players a team takes. Co-op modes put every player on one team (bots fill the rest); PvP modes have two. A match never goes over "Players per match" below. A team size set here also goes to the battle server, which fills each side with bots up to it (needs the battle-server DLL from 2026-11-07); a mode left on its default keeps the battle server's own bot count. Large teams are untested: every bot is a full ship the battle server has to run.</div>
+    <div class="note">The queues the game offers, the mode their matches are hosted in, and how many players a team takes. Co-op modes put every player on one team (bots fill the rest); PvP modes have two. A match never goes over "Players per match" below. A team size set here also goes to the battle server, which fills each side with bots up to it (needs the battle-server DLL from 2026-11-07); a mode left on its default keeps the battle server's own bot count. Large teams are untested: every bot is a full ship the battle server has to run. Bots: three percentages per hosted mode scale the game's own bot values on the battle server (needs the battle-server DLL from 2026-11-16). Lower aim error = more accurate, lower reaction time = faster, higher ability use = abilities fired more readily; 100% everywhere is the original game.</div>
     <section><h2>Queues</h2><div class="md-cards" id="md-cards"></div></section>
     <section class="manage"><h2>Matchmaking switches</h2>
       <div class="fields" id="md-switches"></div>

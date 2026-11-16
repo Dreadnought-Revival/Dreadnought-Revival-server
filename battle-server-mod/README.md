@@ -69,7 +69,7 @@ files (beside the executable, or the matching `DN_HOST_*=1` variable) remain:
 | `dn_host_no_te_spawns.txt`, `dn_host_no_te_winner_lock.txt`, `dn_host_no_te_hud.txt` | Off-switches for Team Elimination parts not yet verified live |
 | `dn_host_no_havoc_jets.txt`, `dn_host_no_havoc_respawn_block.txt` | Off-switches for Havoc parts not yet verified live |
 | `dn_host_no_ceres_buff_end.txt` | Off-switch for the Ceres buff end, not yet verified live |
-| `dn_host_no_ons_ability_slots.txt`, `dn_host_no_ons_gun_log.txt` | Off-switches for the Onslaught ability guard and command ship gun log (new) |
+| `dn_host_no_ons_ability_slots.txt`, `dn_host_no_ons_gun_log.txt` | Off-switches for the bot controller hook (Onslaught ability guard and, since 2026-11-16, the refusal of another ship type's controller values) and the command ship gun log |
 | `dn_host_no_conquest_capture_log.txt` | Turns off the Conquest capture/speed diagnostic |
 | `dn_host_no_net_stats.txt` | Turns off the per-player network log (a hook on the engine's per-frame network path; new) |
 
@@ -832,6 +832,67 @@ found") and never fire. The mod hooks `UYWeaponGroup::LoadWeaponDataTableRow`
 `weapon01`'s name. The tier damage stays in each gun's own projectile row.
 GUESS: the lost rows were copies of `weapon01`'s. Log: `command ship gun: no
 weapon row for WP_ONS_AITargetH_weapon02_BP; using ...`.
+
+## Bots: own ship type's controller values only, and bot tuning per mode (added 2026-11-16)
+
+How a bot thinks, from the cooked assets and the exe: its AI controller is a
+Blueprint of `YNPCAIController`, one per ship type and mode
+(`Generic/GameModes/<mode>/AIShips_<mode>_{Rec,Vet,Leg}` names it per ship).
+There is no skill level: Recruit / Veteran / Legendary only pick the ship tier
+(`m_aiSpawnTierRules`), and `Feats_AI_difficulty` is a placeholder nothing
+reads. The controller's graph switches between sibling classes that only carry
+other numbers (UnderFire, Flee, SkirmishShort, Escort): it queues a behaviour
+whose `m_newControlValues` names the class, `0x28E340` takes the next
+behaviour of the controller's scene entry and `0x29C5F0` copies that class's
+default object (class `+0xF8`) onto the live controller, fire list included.
+
+**Another ship type's values are refused** (same hook and off-switch as the
+Onslaught ability slots below). In 46 of the last 60 Team Deathmatch host logs
+the game itself complained:
+
+```
+VH_TDM_SniperLightHunter_Flee_YAICtrl_BP_C: controller assigned by behavior tree does not have
+ability activation rules for all abilities of ship DreadnoughtMediumT4 spawned with tier 4 : abilitiesIndexesInUse: .
+```
+
+A light sniper's flee values on dreadnoughts (about 80% of the cases), assault,
+support and scout ships: a fire list none of whose rules fits the ship, so it
+uses no ability while that lasts. Which queue hands the ship the sniper's
+behaviour is NOT traced, and how long a ship stayed that way was not measured.
+No controller Blueprint names a class of another family (all 450 cooked
+controllers checked), so a refused application is never one a Blueprint asked
+for. A family is the class right under `VH_YAICtrl_BP_C` or the native class
+(`VH_Dread_YAICtrl_BP_C`, `VH_Sniper_...`, `VH_Assault_...`); an application is
+refused only when both classes have one and they differ, and the ship keeps the
+values it has. Log: `bot controller: REFUSED <values class> for <controller>
+flying <pawn> (refusal n, caller RVA ..., scene index ..., behaviour ...)`, the
+first 40 and every 100th. NOT verified live.
+
+**Bot tuning per hosted mode.** Three percentages from mmogbrain's Game modes
+page (`GET /battle/bots?mode=<the host's -GameMode=>`, loopback, asked once per
+host; `DN_BOT_TUNE=aim,reaction,abilities` overrides it on a test host) scale
+the default objects of the controller classes, where every spawned controller
+and every later change of values copies from:
+
+| Setting | Scales | Evidence |
+| --- | --- | --- |
+| aim error | `m_shootBaseOffset` (`+0x8AC`), `m_shootDistOffset` (`+0x8B0`) and the secondary weapon's pair | the miss radius is base + distance x dist (`0x2B23B0`) |
+| reaction time | `m_perceptReactTimeBase/Rand`, `m_reacquireTargetBaseTime/RandomTime` | GUESS: meaning read from the names |
+| ability use | `m_chancePerCheck` (`+0xB4` of each `0xD0`-byte `m_fireAbilities` entry), capped at 100 | offset from the struct's registration (`0x848500`); GUESS: a percent chance per check |
+
+100/100/100 is the original game and changes nothing; that is what a mode has
+until the operator sets something else, and what the host falls back to when
+mmogbrain does not answer. These values are an operator setting, not original
+data. Property offsets come from the engine's reflection and must match the
+two the exe was read for, or nothing is changed. Smoke host 2026-11-16 (TDM,
+Legendary, `DN_BOT_TUNE=50,60,150`): layout `+0x8AC +0x8B0 +0x9F4 +0x9F8`,
+`+0x4C0 +0x4C4 +0x99C +0x9A0`, fire list `+0x860`; 83 controller classes and
+591 ability rules scaled; `VH_ONS_AITargetM_Parent` read aim base 250, react
+base 2.0 and 4 chance rules, as its asset says. Whether bots then play better
+is NOT verified: no bot spawns on a host nobody joined. Log: `bot tuning: aim
+error N%, reaction time N%, ability use N% (mmogbrain, mode "TDM")`, then
+`bot tuning: <class> -- aim base a -> b, ...` for the first 12 classes and
+`bot tuning: N controller classes tuned so far`.
 
 ## Onslaught ability slots (on; `dn_host_no_ons_ability_slots.txt` turns it off)
 

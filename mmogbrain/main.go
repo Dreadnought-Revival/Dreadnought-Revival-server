@@ -386,6 +386,8 @@ func newRouter(h *handlers.Handler, secret []byte, adminKey, internalAPIKey stri
 	r.HandleFunc("/battle/havoc", battleHavocHandler).Methods(http.MethodGet)
 	// Battle-server mod: the live balancing version (battle_tune.go). Loopback only.
 	r.HandleFunc("/battle/tune", battleTuneHandler).Methods(http.MethodGet)
+	// Battle-server mod: the bot tuning of the mode it hosts (bot_tuning.go). Loopback only.
+	r.HandleFunc("/battle/bots", battleBotsHandler).Methods(http.MethodGet)
 	r.HandleFunc("/online", onlineHandler).Methods(http.MethodGet)
 	r.HandleFunc("/launcher/clock", launcherClockHandler).Methods(http.MethodPost)
 

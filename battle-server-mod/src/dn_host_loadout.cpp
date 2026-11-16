@@ -1316,6 +1316,7 @@ static void HavocDirectorTick(uint8_t *gm);
 static void ConquestTick(uint8_t *gm);
 static void ReportFarAway(uint8_t *pawn, const char *what);
 static void NpcAiStartTick(uint8_t *gm);
+static void BotTuneTick(uint8_t *gm);
 
 static bool ClassChainContains(UObjectMin *obj, const char *needle);
 
@@ -1389,6 +1390,7 @@ static void __fastcall HookGameModeTimer(void *gameMode) {
   TeRoundsTick(gm);
   ConquestTick(gm);
   NpcAiStartTick(gm);
+  BotTuneTick(gm);
   PlayersTick(gm);
   EscalationTick(gm);
   ClassTimeTick(gm);
@@ -4015,6 +4017,261 @@ static OnsClassInfo OnsClassOf(void *cls) {
   return info;
 }
 
+// ---------------------------------------------------------------------------
+// Bots: another ship type's controller values are refused (all modes), and
+// the bot tuning of the hosted mode (mmogbrain's Game modes page).
+//
+// How a bot thinks (cooked assets + exe, 2026-11-16): a bot's AI controller
+// is a Blueprint of YNPCAIController, one per ship type and mode
+// (AIShips_<mode>_{Rec,Vet,Leg}: VH_STD_DreadMediumStandard_Behavior_...). Its
+// graph switches between sibling classes that only carry other numbers
+// (UnderFire, Flee, SkirmishShort, Escort) by queueing a behaviour whose
+// m_newControlValues names the class; NextBehaviour (0x28E340) takes the next
+// behaviour of the controller's scene entry and 0x29C5F0 copies that class's
+// default object (class +0xF8) onto the live controller, fire list included.
+//
+// 1. Refused: values of another ship family. Host logs, 2026-11-16: in 46 of
+//    the last 60 Team Deathmatch hosts the game logged
+//      "VH_TDM_SniperLightHunter_Flee_YAICtrl_BP_C: controller assigned by
+//       behavior tree does not have ability activation rules for all
+//       abilities of ship DreadnoughtMediumT4 ...: abilitiesIndexesInUse: ."
+//    -- a light sniper's flee values on dreadnoughts (about 80% of the
+//    cases), assault, support and scout ships, none of whose abilities that
+//    fire list can use. It is what the Onslaught guard below already refuses
+//    for command ships. Which queue hands a ship the sniper's behaviour is
+//    NOT traced; no controller Blueprint names a class of another family
+//    (all 450 cooked controllers checked), so a refused application is never
+//    one a Blueprint asked for. A family is the class right under
+//    VH_YAICtrl_BP_C or the native class: VH_Dread_YAICtrl_BP_C,
+//    VH_Sniper_..., VH_Assault_... . Refused only when BOTH classes have one
+//    and they differ; the ship keeps the values it has.
+//
+// 2. Tuning: three percentages for the hosted mode (GET /battle/bots?mode=,
+//    the host's -GameMode=; DN_BOT_TUNE=aim,reaction,abilities overrides it
+//    for a test host), applied to the default objects of the controller
+//    classes, which is where every spawned controller and every later change
+//    of values copies from:
+//      aim        m_shootBaseOffset (+0x8AC) and m_shootDistOffset (+0x8B0):
+//                 the miss radius is base + distance * dist (0x2B23B0), and
+//                 the same pair for the secondary weapon.
+//      reaction   m_perceptReactTimeBase/Rand, m_reacquireTargetBaseTime/
+//                 RandomTime. GUESS: meaning read from the names.
+//      abilities  m_chancePerCheck (+0xB4 of each 0xD0-byte m_fireAbilities
+//                 entry, as the struct registers it at 0x848500), capped at
+//                 100. GUESS: a percent chance per check.
+//    100/100/100 (the original game) touches nothing. Property offsets come
+//    from the engine's reflection; the two the exe was read for must match
+//    or nothing is changed.
+static int PropOffset(UObjectMin *obj, const char *name);
+#define OFF_UCLASS_DEFAULT_OBJECT 0xF8 // as 0x29C5F0 reads the values class
+#define OFF_NPC_SHOOT_BASE_OFFSET 0x8AC
+#define NPC_FIRE_ABILITY_CHANCE 0xB4
+
+// The ship family of a controller class, or nullptr (not an NPC controller,
+// or the shared base itself). Cached: a miss costs name lookups.
+static void *NpcControllerFamily(void *cls) {
+  struct Entry {
+    void *cls, *family;
+  };
+  static Entry s_cache[1024];
+  static int s_n = 0; // game thread only
+  static void *s_baseBp = nullptr;
+  if (!cls)
+    return nullptr;
+  for (int i = 0; i < s_n; ++i)
+    if (s_cache[i].cls == cls)
+      return s_cache[i].family;
+  void *npcCls = *(void **)(g_base + OFF_CLASSPTR_NPC_AI_CONTROLLER);
+  void *family = nullptr;
+  UObjectMin *c = (UObjectMin *)cls;
+  for (int depth = 0; c && npcCls && depth < 32 && IsReadable(c, OFF_USTRUCT_SUPER + 8); ++depth) {
+    UObjectMin *sup = *(UObjectMin **)((uint8_t *)c + OFF_USTRUCT_SUPER);
+    if (!sup)
+      break;
+    if (!s_baseBp && sup != npcCls && IsReadable(sup, sizeof(UObjectMin))) {
+      const char *sn = NameText(sup->Name);
+      if (sn && !strcmp(sn, "VH_YAICtrl_BP_C"))
+        s_baseBp = sup;
+    }
+    if (sup == npcCls || sup == s_baseBp) {
+      family = (c == s_baseBp) ? nullptr : c;
+      break;
+    }
+    c = sup;
+  }
+  if (s_n < (int)(sizeof(s_cache) / sizeof(s_cache[0])))
+    s_cache[s_n++] = Entry{cls, family};
+  return family;
+}
+
+struct BotTune {
+  int aim, reaction, abilities; // percent of the game's own values
+  int state;                    // 0 not asked, 1 original (nothing to do), 2 tuning, -1 layout unexpected
+  int tries;
+  int offAim[4], offReaction[4], offFire;
+  void *done[1024]; // default objects already scaled
+  int nDone, nFire;
+};
+static BotTune g_botTune = {100, 100, 100, 0, 0, {-1, -1, -1, -1}, {-1, -1, -1, -1}, -1, {}, 0, 0};
+
+static void BotTuneLoad() {
+  BotTune &t = g_botTune;
+  char env[64] = {0}, mode[32] = {0}, body[64] = {0};
+  int a = 100, r = 100, b = 100;
+  const char *from = "mmogbrain";
+  const wchar_t *cmd = GetCommandLineW();
+  const wchar_t *p = cmd ? wcsstr(cmd, L"-GameMode=") : nullptr;
+  for (int i = 0; p && i < 30 && p[10 + i] && p[10 + i] != L' '; ++i)
+    mode[i] = (p[10 + i] < 128 && (isalnum((int)p[10 + i]) || p[10 + i] == L'_')) ? (char)p[10 + i] : '_';
+  if (GetEnvironmentVariableA("DN_BOT_TUNE", env, sizeof(env)) > 0 && sscanf_s(env, "%d,%d,%d", &a, &r, &b) == 3) {
+    from = "DN_BOT_TUNE";
+  } else {
+    char path[96];
+    _snprintf_s(path, sizeof(path), _TRUNCATE, "/battle/bots?mode=%s", mode);
+    if (!mode[0] || !HttpGetLoopback(path, body, sizeof(body)) || sscanf_s(body, "%d %d %d", &a, &r, &b) != 3) {
+      if (++t.tries < 3)
+        return; // asked again on the next tick
+      Logf("bot tuning: no answer for mode \"%s\" (GET /battle/bots); the bots keep the game's own values", mode);
+      t.state = 1;
+      return;
+    }
+  }
+  auto clamp = [](int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; };
+  t.aim = clamp(a, 0, 300);
+  t.reaction = clamp(r, 10, 300);
+  t.abilities = clamp(b, 10, 500);
+  t.state = (t.aim == 100 && t.reaction == 100 && t.abilities == 100) ? 1 : 2;
+  Logf("bot tuning: aim error %d%%, reaction time %d%%, ability use %d%% (%s, mode \"%s\")%s", t.aim, t.reaction,
+       t.abilities, from, mode, t.state == 1 ? " -- the original game, nothing is changed" : "");
+}
+
+// Scales one controller class's default object, once.
+static void BotTuneDefaultObject(uint8_t *cdo) {
+  BotTune &t = g_botTune;
+  if (t.state != 2 || !cdo)
+    return;
+  for (int i = 0; i < t.nDone; ++i)
+    if (t.done[i] == cdo)
+      return;
+  if (t.nDone >= (int)(sizeof(t.done) / sizeof(t.done[0])) || !IsReadable(cdo, 0xB10))
+    return;
+  if (t.offFire < 0) { // first class: the layout, from reflection
+    static const char *kAim[4] = {"m_shootBaseOffset", "m_shootDistOffset", "m_shootSecondaryBaseOffset",
+                                  "m_shootSecondaryDistOffset"};
+    static const char *kReact[4] = {"m_perceptReactTimeBase", "m_perceptReactTimeRand", "m_reacquireTargetBaseTime",
+                                    "m_reacquireTargetRandomTime"};
+    for (int i = 0; i < 4; ++i) {
+      t.offAim[i] = PropOffset((UObjectMin *)cdo, kAim[i]);
+      t.offReaction[i] = PropOffset((UObjectMin *)cdo, kReact[i]);
+    }
+    t.offFire = PropOffset((UObjectMin *)cdo, "m_fireAbilities");
+    bool ok = t.offAim[0] == OFF_NPC_SHOOT_BASE_OFFSET && t.offAim[1] == OFF_NPC_SHOOT_BASE_OFFSET + 4 &&
+              t.offFire == OFF_NPC_FIRE_ABILITIES;
+    for (int i = 0; i < 4; ++i)
+      ok = ok && t.offAim[i] > 0 && t.offAim[i] < 0xB00 && t.offReaction[i] > 0 && t.offReaction[i] < 0xB00;
+    Logf("bot tuning: controller layout aim +0x%X +0x%X +0x%X +0x%X, reaction +0x%X +0x%X +0x%X +0x%X, fire list +0x%X%s",
+         t.offAim[0], t.offAim[1], t.offAim[2], t.offAim[3], t.offReaction[0], t.offReaction[1], t.offReaction[2],
+         t.offReaction[3], t.offFire, ok ? "" : " -- NOT the layout the exe was read for; nothing is changed");
+    if (!ok) {
+      t.state = -1;
+      return;
+    }
+  }
+  t.done[t.nDone++] = cdo;
+  auto scale = [](float *v, int pct, float cap) {
+    if (*v > 0.0f && *v < 1.0e9f) { // unset (0) and "never" sentinels stay
+      float n = *v * (float)pct / 100.0f;
+      *v = (cap > 0.0f && n > cap) ? cap : n;
+    }
+  };
+  float aimWas = *(float *)(cdo + t.offAim[0]), reactWas = *(float *)(cdo + t.offReaction[0]);
+  for (int i = 0; i < 4; ++i) {
+    scale((float *)(cdo + t.offAim[i]), t.aim, 0.0f);
+    scale((float *)(cdo + t.offReaction[i]), t.reaction, 0.0f);
+  }
+  int rules = 0;
+  uint8_t *fe = *(uint8_t **)(cdo + t.offFire);
+  int fc = *(int32_t *)(cdo + t.offFire + 8);
+  if (fe && fc > 0 && fc <= 256 && IsReadable(fe, (size_t)fc * NPC_FIRE_ABILITY_SIZE))
+    for (int i = 0; i < fc; ++i) {
+      float *chance = (float *)(fe + (size_t)i * NPC_FIRE_ABILITY_SIZE + NPC_FIRE_ABILITY_CHANCE);
+      if (*chance > 0.0f && *chance <= 100.0f) {
+        scale(chance, t.abilities, 100.0f);
+        ++rules;
+      }
+    }
+  t.nFire += rules;
+  if (t.nDone <= 12) {
+    const char *cn = IsReadable(((UObjectMin *)cdo)->Class, sizeof(UObjectMin)) ? NameText(((UObjectMin *)cdo)->Class->Name) : nullptr;
+    Logf("bot tuning: %s -- aim base %.0f -> %.0f, react base %.2f -> %.2f s, %d of %d ability rules scaled", cn ? cn : "?",
+         aimWas, *(float *)(cdo + t.offAim[0]), reactWas, *(float *)(cdo + t.offReaction[0]), rules, fc > 0 ? fc : 0);
+  }
+}
+
+// Every loaded controller class, every few seconds: the mode's bot set loads
+// with the map, long before the first bot spawns, and anything loaded later
+// is caught here or by the hook below, before its values are copied.
+static void BotTuneTick(uint8_t *gm) {
+  (void)gm;
+  BotTune &t = g_botTune;
+  if (t.state == 0)
+    BotTuneLoad();
+  if (t.state != 2)
+    return;
+  static DWORD s_last = 0;
+  DWORD now = GetTickCount();
+  if (s_last && now - s_last < 5000)
+    return;
+  s_last = now;
+  __try {
+    void *npcCls = *(void **)(g_base + OFF_CLASSPTR_NPC_AI_CONTROLLER);
+    FUObjectArrayMin *arr = GObjects();
+    if (!npcCls || !arr || !arr->Objects)
+      return;
+    int before = t.nDone;
+    for (int i = 0; i < arr->NumElements; ++i) {
+      UObjectMin *o = arr->Objects[i].Object;
+      // Default objects only (pointer checks; no name lookups in this loop).
+      if (!o || !(o->Flags & RF_CDO_OR_ARCHETYPE) || !o->Class || o->Class == npcCls ||
+          *(void **)((uint8_t *)o->Class + OFF_UCLASS_DEFAULT_OBJECT) != o || !ClassIsAncestor(o->Class, npcCls))
+        continue;
+      BotTuneDefaultObject((uint8_t *)o);
+      if (t.state != 2)
+        return;
+    }
+    if (t.nDone != before)
+      Logf("bot tuning: %d controller classes tuned so far (%d ability rules)", t.nDone, t.nFire);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("bot tuning: EXCEPTION 0x%08X while scanning controller classes; tuning stopped", GetExceptionCode());
+    t.state = -1;
+  }
+}
+
+// True when valuesClass belongs to another ship family than ctrl (logged).
+static bool RefuseForeignControlValues(void *ctrl, void *valuesClass, void *caller) {
+  __try {
+    void *own = NpcControllerFamily(((UObjectMin *)ctrl)->Class);
+    void *theirs = NpcControllerFamily(valuesClass);
+    if (!own || !theirs || own == theirs)
+      return false;
+    static volatile LONG s_refused = 0;
+    LONG n = InterlockedIncrement(&s_refused);
+    if (n <= 40 || n % 100 == 0) {
+      uint8_t *c = (uint8_t *)ctrl;
+      uint8_t *pawn = *(uint8_t **)(c + OFF_CONTROLLER_PAWN);
+      const char *vn = NameText(((UObjectMin *)valuesClass)->Name);
+      Logf("bot controller: REFUSED %s for %s flying %s (refusal %ld, caller RVA 0x%llX, scene index %d, behaviour %d) "
+           "-- another ship type's values; the ship keeps its own",
+           vn ? vn : "?", ClassNameOf(ctrl), pawn ? ClassNameOf(pawn) : "no pawn", n,
+           (unsigned long long)((uintptr_t)caller - g_base), *(int32_t *)(c + OFF_NPC_SCENE_INDEX),
+           c[OFF_NPC_BEHAVIOUR_STATE]);
+    }
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+
 // Only Onslaught's own assault / command ship controllers may be applied to
 // those ships. Host log 2026-11-01 (Legendary, Amirani): at 19:58, a second
 // after the game spawned one of its bots, the team 1 command ship's fire list
@@ -4049,6 +4306,17 @@ static void __fastcall HookNpcApplyControlValues(void *ctrl, void *valuesClass) 
         return;
       }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+  }
+  if (ctrl && valuesClass) {
+    if (RefuseForeignControlValues(ctrl, valuesClass, caller))
+      return;
+    // A class loaded after the last scan: tuned before its values are copied.
+    if (g_botTune.state == 2 && IsReadable((uint8_t *)valuesClass + OFF_UCLASS_DEFAULT_OBJECT, 8)) {
+      __try {
+        BotTuneDefaultObject(*(uint8_t **)((uint8_t *)valuesClass + OFF_UCLASS_DEFAULT_OBJECT));
+      } __except (EXCEPTION_EXECUTE_HANDLER) {
+      }
     }
   }
   g_origNpcApplyControlValues(ctrl, valuesClass);
@@ -11462,7 +11730,7 @@ static DWORD WINAPI Startup(LPVOID) {
   InstallSwitchedHook("flagship when no ship is picked (spawn loadout lookup)", RVA_SPAWN_LOADOUT_LOOKUP,
                       (void *)&HookSpawnLoadoutLookup, (void **)&g_origSpawnLoadoutLookup);
   if (!SwitchOn("DN_HOST_NO_ONS_ABILITY_SLOTS", "dn_host_no_ons_ability_slots.txt"))
-    InstallSwitchedHook("onslaught ability slots (NPC controller values)", RVA_NPC_APPLY_CONTROL_VALUES,
+    InstallSwitchedHook("bot controller values (own ship type only; onslaught ability slots; bot tuning)", RVA_NPC_APPLY_CONTROL_VALUES,
                         (void *)&HookNpcApplyControlValues, (void **)&g_origNpcApplyControlValues);
   // Always hooked since 2026-11-05: the fair-play damage check rides on it;
   // the switch now only silences the command ship gun log.

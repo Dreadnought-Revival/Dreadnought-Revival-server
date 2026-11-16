@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -147,9 +148,18 @@ func adminModesJSON() map[string]any {
 		"max_wait_s_max":   int(maxMatchWait / time.Second),
 	}
 	queues := []map[string]any{}
+	botModes, botStored := botTuningModes(), storedBotTuning(database)
 	for _, mode := range matchmaker.GameModeConfigs() {
 		queued := matchmaker.NormalizeGameMode(mode.Name)
 		q := map[string]any{"queue": mode.Name, "mode": queued, "runs": matchmaker.RunsAs(queued), "client_team_size": mode.TeamSize}
+		// Bot tuning belongs to the mode the match is hosted in (bot_tuning.go).
+		if runs := matchmaker.RunsAs(queued); botModes[runs] && queued != matchmaker.PvEGameMode && mode.Name != matchmaker.CustomGameClientName {
+			b, set := botStored[runs]
+			if !set {
+				b = originalBotTuning
+			}
+			q["bots"] = map[string]any{"aim": b.Aim, "reaction": b.Reaction, "abilities": b.Abilities, "dashboard": set}
+		}
 		if mode.Name != matchmaker.CustomGameClientName { // the lobby, not a queue
 			size, set := matchmaker.TeamSizeFor(queued)
 			q["team_size"] = adminSwitch{Value: size, Env: matchmaker.DefaultTeamSize(queued), Dashboard: set}
@@ -163,6 +173,8 @@ func adminModesJSON() map[string]any {
 	out["queues"] = queues
 	out["matches_7d"] = matchesByModeSince(database, time.Now().Add(-7*24*time.Hour))
 	out["max_team_size"] = matchmaker.MaxTeamSize
+	out["bot_limits"] = map[string][2]int{"aim": {botAimMin, botAimMax}, "reaction": {botReactionMin, botReactionMax},
+		"abilities": {botAbilitiesMin, botAbilitiesMax}}
 	if mm := activeMatchmaker; mm != nil {
 		players, wait := mm.Sizing()
 		out["max_players"] = adminSwitch{Value: players, Env: envMatchSizing.players, Dashboard: set[flagMatchMaxPlayers]}
@@ -214,6 +226,9 @@ func adminAPISetModes(w http.ResponseWriter, r *http.Request) {
 		MaxWaitS        *int    `json:"max_wait_s"`
 		// TeamSizes sets max humans per team by queue mode; null = default.
 		TeamSizes map[string]*int `json:"team_sizes"`
+		// BotTuning sets the bots of a hosted mode (bot_tuning.go), in
+		// percent of the game's own values; null = the original game.
+		BotTuning map[string]*botTuning `json:"bot_tuning"`
 		Reset     []string        `json:"reset"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
@@ -259,6 +274,18 @@ func adminAPISetModes(w http.ResponseWriter, r *http.Request) {
 		}
 		if n != nil && (*n < 1 || *n > matchmaker.MaxTeamSize) {
 			writeAdminError(w, http.StatusBadRequest, "a team size must be 1 to "+strconv.Itoa(matchmaker.MaxTeamSize))
+			return
+		}
+	}
+	botModes := botTuningModes()
+	for mode, b := range req.BotTuning {
+		if !botModes[mode] {
+			writeAdminError(w, http.StatusBadRequest, "no bots to tune in "+mode)
+			return
+		}
+		if b != nil && !b.valid() {
+			writeAdminError(w, http.StatusBadRequest, fmt.Sprintf("bot tuning for %s: aim %d to %d, reaction %d to %d, abilities %d to %d (percent)",
+				mode, botAimMin, botAimMax, botReactionMin, botReactionMax, botAbilitiesMin, botAbilitiesMax))
 			return
 		}
 	}
@@ -329,6 +356,20 @@ func adminAPISetModes(w http.ResponseWriter, r *http.Request) {
 		matchmaker.SetTeamSizeOverride(mode, n)
 		changed[flag] = *n
 	}
+	botFrom := map[string]any{}
+	for mode, b := range req.BotTuning {
+		was, _ := botTuningFor(database, mode)
+		if err := saveBotTuning(database, mode, b); err != nil {
+			writeAdminError(w, http.StatusInternalServerError, "could not save the bot tuning for "+mode)
+			return
+		}
+		botFrom[botTuneFlagPrefix+mode] = was.String()
+		if b == nil || *b == originalBotTuning {
+			changed[botTuneFlagPrefix+mode] = "original"
+		} else {
+			changed[botTuneFlagPrefix+mode] = b.String()
+		}
+	}
 	if req.MaxPlayers != nil || req.MaxWaitS != nil {
 		players, wait := -1, time.Duration(-1)
 		if req.MaxPlayers != nil {
@@ -378,6 +419,9 @@ func adminAPISetModes(w http.ResponseWriter, r *http.Request) {
 		if s, ok := before[k].(adminSwitch); ok {
 			from[k] = s.Value
 		}
+	}
+	for k, v := range botFrom {
+		from[k] = v
 	}
 	adminAudit(database, r, "game modes", "", map[string]any{"from": from, "to": changed})
 	writeAdminJSON(w, after)
