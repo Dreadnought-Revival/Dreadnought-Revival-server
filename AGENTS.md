@@ -164,8 +164,9 @@ cd battle-server-mod && nice -n 19 bash build-linux.sh   # -> build-linux/dn_hos
 
 `bash scripts/wine-client.sh [seconds] [output-log]` runs the real client against
 this stack on this Linux box: mints a token with dn-launcher (`run/dn-launcher.exe`,
-built by `setup.sh` from the launcher repo; `DN_PLAYER_ID`, so
-it auto-registers a stable test account), launches the client, dismisses the
+built by `setup.sh` from the launcher repo; `DN_PLAYER_ID`, which signs in
+the existing test account `claude-test-01` -- the steam-ticket route no longer
+creates accounts since 2026-11-17, so a new id gets 403), launches the client, dismisses the
 title screen with xdotool, sits in the hangar, exits. About four minutes per run.
 This is the A/B loop — change a response, restart mmogbrain, run it, read the log
 — and it removes the "wait for the user to test on Windows" round trip that

@@ -56,8 +56,8 @@ func writeGreyboxError(w http.ResponseWriter, status int, code int, msg string) 
 //  1. Auto-login via Steam ticket:  request contains steam_ticket / grant_type=steam_ticket
 //  2. Password login (our custom):  request contains username + password
 //
-// For Steam tickets we auto-register the user on first seen, then return a JWT.
-// This lets the unmodified launcher skip the account-link page and go straight to the game.
+// Steam tickets sign in only accounts that route created before 2026-11-17;
+// unknown tickets are refused (loginSteam).
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<16) // 64KB limit
 	rawBody, err := io.ReadAll(r.Body)
@@ -143,7 +143,8 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	writeGreyboxError(w, http.StatusBadRequest, -32602, "Invalid request: no credentials provided")
 }
 
-// loginSteam accepts any Steam auth ticket and auto-creates a user on first login.
+// loginSteam signs in the account an earlier Steam ticket created. It used to
+// auto-create one for any unknown ticket; since 2026-11-17 it refuses those.
 // We hash the ticket bytes to get a stable "steam_id" without needing Steamworks validation.
 //
 // KNOWN TRUST-BOUNDARY LIMITATION (tracked issue #13): this does not call
@@ -168,26 +169,14 @@ func (h *Handler) loginSteam(w http.ResponseWriter, ticket string, rpcID interfa
 	).Scan(&user.ID, &user.Username, &user.Email)
 
 	if err == sql.ErrNoRows {
-		// Auto-register new Steam user
-		user.ID = uuid.New().String()
-		user.Username = "player_" + steamID[:8]
-		user.Email = user.Username + "@steam.private"
-		// Use a random bcrypt hash as placeholder (Steam users never use password login)
-		dummyHash, _ := bcrypt.GenerateFromPassword([]byte(uuid.New().String()), bcrypt.MinCost)
-		_, insErr := h.DB.Exec(
-			`INSERT INTO users(id, username, email, password_hash, steam_id) VALUES(?,?,?,?,?)`,
-			user.ID, user.Username, user.Email, string(dummyHash), steamID,
-		)
-		if insErr != nil {
-			h.Log.WithError(insErr).Error("steam auto-register failed")
-			writeGreyboxError(w, http.StatusInternalServerError, -32603, "Registration failed")
-			return
-		}
-		h.Log.WithFields(logrus.Fields{
-			fieldUserID:   user.ID,
-			fieldUsername: user.Username,
-			"steam_id":    steamID,
-		}).Info("steam user auto-registered")
+		// No auto-registration any more (audit 2026-11-17). The ticket is not
+		// verified (see above), so this route handed a new account to anyone
+		// for any bytes, without limit. Accounts are created with a username,
+		// email and password (/auth/register); the accounts this route made
+		// earlier still sign in here.
+		h.Log.WithField("steam_id", steamID).Warn("steam login: unknown ticket refused (no auto-registration)")
+		writeGreyboxError(w, http.StatusForbidden, -32001, "No account for this identity. Create an account in the launcher and sign in with it.")
+		return
 	} else if err != nil {
 		h.Log.WithError(err).Error("steam login: db query")
 		writeGreyboxError(w, http.StatusInternalServerError, -32603, "Login failed")
