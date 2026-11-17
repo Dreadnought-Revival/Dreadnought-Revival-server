@@ -290,9 +290,10 @@
       section(`Game logs from the launcher (${fmt((P.client_logs || []).length)})`,
         table(['Uploaded', 'Session', 'Result', 'Size', 'Launcher', ''], (P.client_logs || []).map((g) => [when(g.uploaded_at),
           g.seconds ? duration(g.seconds) : '—',
-          g.crashed ? chip('crashed (exit ' + g.exit_code + ')', 'bad') : g.late ? chip('sent at next start', 'warn') : chip('closed (exit ' + g.exit_code + ')', 'good'),
+          g.crashed ? chip('crashed (exit ' + g.exit_code + ')', 'bad') : g.late ? chip('sent at next start', 'warn')
+            : g.exit_code !== 0 ? chip('closed, crashed on exit (' + g.exit_code + ')', 'warn') : chip('closed', 'good'),
           bytes(g.bytes), g.launcher_version || '—', logButton(g)]), 'No game logs uploaded yet.'),
-        el('div', { class: 'muted' }, 'The launcher uploads DreadGame.log when the game closes, without the sign-in token and the Windows computer and user names.')),
+        el('div', { class: 'muted' }, 'The launcher uploads DreadGame.log when the game closes, without the sign-in token and the Windows computer and user names. "Crashed on exit": the game shut down completely, then its process ended with an error code (0xC0000005 = 3221225477 on every quit, harmless).')),
     ];
   }
 
