@@ -5282,7 +5282,14 @@ static void ReportMatchResult(void *orbitComp) {
 #define OFF_PRI_XP_MANAGER 0x930
 #define OFF_XPM_MATCH_XP 0xF8
 #define REWARD_POOLS 13
-#define MAX_FLEET_SHIPS 16
+// A fleet can hold far more than 16 ships: 4 fleets on the server held 19 to
+// 27 on 2026-11-16 (fleet positions up to 47). With a cap of 16 the ships
+// past it got no XP entry, and the client's rewards screen reported "Free XP
+// pools for heroship were not gathered correctly" / "Ship XP pools were not
+// gathered correctly" for exactly those ship ids (client reports 2026-11-15
+// and -16: a Legendary fleet of 19, mmogbrain sent 19 ids, the mod kept 16,
+// the 3 reported ids were the 3 dropped). 64 x up to 10 digits fits v[1024].
+#define MAX_FLEET_SHIPS 64
 #define RVA_OPERATOR_NEW 0xE02DE0 // operator new(size) -> FMemory::Malloc
 
 typedef void *(__fastcall *tOperatorNew)(size_t size);
@@ -5395,7 +5402,7 @@ static void SendBoosterRPCs(uint8_t *pri, const char *body) {
 }
 
 static void WriteEomRewards(uint8_t *pri, const char *body, const char *match) {
-  char v[512];
+  char v[1024];
   int32_t credits[REWARD_POOLS] = {}, xp[REWARD_POOLS] = {}, shipXp[REWARD_POOLS] = {};
   int32_t zero[REWARD_POOLS] = {}, unplayed[REWARD_POOLS] = {};
   int32_t fleet[MAX_FLEET_SHIPS] = {}, flown[MAX_FLEET_SHIPS] = {};
@@ -5411,6 +5418,14 @@ static void WriteEomRewards(uint8_t *pri, const char *body, const char *match) {
   bool haveUnplayed =
       ParseInts(FieldValue(body, "unplayed_ship_xp_pools", v, sizeof(v)), unplayed, REWARD_POOLS) == REWARD_POOLS;
   int nFleet = ParseInts(FieldValue(body, "fleet_ships", v, sizeof(v)), fleet, MAX_FLEET_SHIPS);
+  if (nFleet == MAX_FLEET_SHIPS && strchr(v, ',')) {
+    int listed = 1;
+    for (const char *c = v; *c; ++c)
+      listed += *c == ',';
+    if (listed > MAX_FLEET_SHIPS)
+      Logf("eom rewards: fleet of %d ships, only the first %d get an XP entry (MAX_FLEET_SHIPS); the client will "
+           "report ShipXpError for the rest", listed, MAX_FLEET_SHIPS);
+  }
   int nFlown = ParseInts(FieldValue(body, "flown_ships", v, sizeof(v)), flown, MAX_FLEET_SHIPS);
 
   wchar_t wmatch[96];
