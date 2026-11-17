@@ -494,6 +494,7 @@ func adminAPIPlayerProfile(w http.ResponseWriter, r *http.Request) {
 	_ = database.QueryRow(`SELECT COUNT(*), COALESCE(SUM(created_at>?),0), COALESCE(MAX(created_at),'') FROM client_telemetry WHERE user_id=?`, since, pid).Scan(&telemetry, &telemetry7, &lastTelemetry)
 	out["reports"] = map[string]any{"total": reports, "last_7d": reports7, "last": lastReport}
 	out["telemetry"] = map[string]any{"total": telemetry, "last_7d": telemetry7, "last": lastTelemetry}
+	out["client_logs"] = playerClientLogs(database, pid, 50)
 
 	// --- notes ---------------------------------------------------------------
 	out["notes"] = adminPlayerNotes(database, pid)

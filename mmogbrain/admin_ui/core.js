@@ -41,6 +41,14 @@ window.Admin = (() => {
     if (!res.ok) { let m = text; try { m = JSON.parse(text).error || text; } catch (e) {} throw new Error(m.trim() || res.statusText); }
     return text ? JSON.parse(text) : {};
   }
+  // apiText: like api, for an endpoint that answers plain text (a file).
+  async function apiText(path) {
+    const res = await fetch('/admin/api' + path, { headers: { 'X-Admin-Key': key || '' } });
+    if (res.status === 403) { lock('That key was not accepted.'); throw new Error('forbidden'); }
+    const text = await res.text();
+    if (!res.ok) { let m = text; try { m = JSON.parse(text).error || text; } catch (e) {} throw new Error(m.trim() || res.statusText); }
+    return { text, name: ((res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/) || [])[1] || 'download.txt' };
+  }
   const postJSON = (path, body) => api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
 
   // --- building the page ----------------------------------------------------
@@ -393,7 +401,7 @@ window.Admin = (() => {
   }
 
   return {
-    $, el, svg, api, postJSON, fmt, compact, ago, when, duration, bytes, parseTime, card, chip, fill, table, kv, tabs, toast, act, debounce, toCSV, download,
+    $, el, svg, api, apiText, postJSON, fmt, compact, ago, when, duration, bytes, parseTime, card, chip, fill, table, kv, tabs, toast, act, debounce, toCSV, download,
     MODE_NAMES, modeName, FLEET_NAMES, fleetName, auditText, SERIES, chart, bars, meter,
     page, go, link, playerLink, href, setBadge, setTitle, refresh, schedule, start,
     arg: () => currentArg,

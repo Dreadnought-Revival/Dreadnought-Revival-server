@@ -43,6 +43,7 @@ func main() {
 	}
 
 	dbPath := getenv("DB_PATH", "mmog.db")
+	configureClientLogs(dbPath)
 	addr := getenv("ADDR", ":8083")
 	secret := requireJWTSecret(log)
 	setMmogJWTSecret(secret)
@@ -390,6 +391,8 @@ func newRouter(h *handlers.Handler, secret []byte, adminKey, internalAPIKey stri
 	r.HandleFunc("/battle/bots", battleBotsHandler).Methods(http.MethodGet)
 	r.HandleFunc("/online", onlineHandler).Methods(http.MethodGet)
 	r.HandleFunc("/launcher/clock", launcherClockHandler).Methods(http.MethodPost)
+	// The launcher's upload of the game log after a session (client_logs.go).
+	r.HandleFunc("/launcher/log", launcherLogHandler).Methods(http.MethodPost)
 
 	// Admin dashboard (admin_dashboard.go): registered before the /admin
 	// subrouter so the static page is served without a key; its data API

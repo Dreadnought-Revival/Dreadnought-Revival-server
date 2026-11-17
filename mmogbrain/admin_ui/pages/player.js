@@ -2,7 +2,7 @@
 // sub tabs for everything the server knows about the player. Every value is
 // put on the page as text (Admin.el), never as markup.
 (() => {
-  const { $, el, api, postJSON, fmt, ago, when, chip, card, table, kv, tabs, act, auditText, bars, link, modeName, setTitle } = Admin;
+  const { $, el, api, apiText, postJSON, fmt, ago, when, duration, bytes, chip, card, table, kv, tabs, act, auditText, bars, link, modeName, setTitle, download } = Admin;
   let P = null; let openedTab = ''; let pid = ''; let tabCtl = null; let invFilter = '';
 
   // The contracts' in-game names (MPQuestCollection m_name, English).
@@ -19,7 +19,7 @@
   };
   const TABS = [{ id: 'overview', label: 'Overview' }, { id: 'inventory', label: 'Inventory & purchases' }, { id: 'ships', label: 'Ships & XP' },
     { id: 'fleets', label: 'Fleets & loadouts' }, { id: 'progress', label: 'Progress' }, { id: 'social', label: 'Social' }, { id: 'matches', label: 'Matches' },
-    { id: 'moderation', label: 'Moderation' }, { id: 'reports', label: 'Reports & telemetry' }];
+    { id: 'moderation', label: 'Moderation' }, { id: 'reports', label: 'Reports, telemetry & logs' }];
 
   const name = () => (P && P.identity.name) || 'this player';
   const section = (title, ...kids) => el('section', {}, el('h2', {}, title), ...kids);
@@ -275,6 +275,11 @@
     ];
   }
 
+  const logButton = (g) => el('button', { class: 'btn small', type: 'button', onclick: async () => {
+    const r = await act(() => apiText('/client-logs/' + g.id), msg(), 'Downloaded.');
+    if (r) download(r.name, r.text, 'text/plain');
+  } }, 'Download');
+
   function tabReports() {
     const r = P.reports; const t = P.telemetry;
     return [
@@ -282,6 +287,12 @@
         card('Telemetry events', fmt(t.total), false, `${fmt(t.last_7d)} in 7 days`), card('Last event', t.last ? ago(t.last) + ' ago' : 'never', true)),
       el('div', { class: 'row' }, link('Open this player\'s reports', 'reports', pid), link('Open this player\'s telemetry', 'telemetry', pid),
         link('Fair-play checks', 'fairplay', 'p:' + pid)),
+      section(`Game logs from the launcher (${fmt((P.client_logs || []).length)})`,
+        table(['Uploaded', 'Session', 'Result', 'Size', 'Launcher', ''], (P.client_logs || []).map((g) => [when(g.uploaded_at),
+          g.seconds ? duration(g.seconds) : '—',
+          g.crashed ? chip('crashed (exit ' + g.exit_code + ')', 'bad') : g.late ? chip('sent at next start', 'warn') : chip('closed (exit ' + g.exit_code + ')', 'good'),
+          bytes(g.bytes), g.launcher_version || '—', logButton(g)]), 'No game logs uploaded yet.'),
+        el('div', { class: 'muted' }, 'The launcher uploads DreadGame.log when the game closes, without the sign-in token and the Windows computer and user names.')),
     ];
   }
 
