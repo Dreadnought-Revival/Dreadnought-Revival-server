@@ -189,6 +189,28 @@ func maxPlayersFor(queued string, overallCap int) int {
 	return n
 }
 
+// HostTeamSize is the ships per side the battle server keeps, bots included
+// (?DNTeamSize=, the mod), and its player limit; 0, 0 leaves the host's own.
+//
+// PvP queues always send theirs, the default included. The host's own size
+// is 8 a side in every mode (host logs, "team size 8", 2026-11-17), so a
+// TDM match the dashboard showed as 5 per team ran 8 against 8 -- 16 ships
+// -- with bots filling what the 5-human cap left. The original PvP modes
+// were 5 against 5, the size the client's game-mode rows carry
+// (clientGameModeConfigs). DNTeamSize itself is verified live in TDM (10 a
+// side on 2026-11-15, 20 on 2026-11-07).
+//
+// Co-op queues (one team: Onslaught, Proving Grounds, Training, PvE, Havoc)
+// send theirs only when set on the dashboard: their default is the 10-human
+// cap, not a ship count, and no source gives their original bot numbers.
+func HostTeamSize(queued string) (size, maxPlayers int) {
+	n, set := TeamSizeFor(queued)
+	if !set && TeamsIn(queued) != 2 {
+		return 0, 0
+	}
+	return n, n * TeamsIn(queued)
+}
+
 // MaxPlayersFor is maxPlayersFor with the matchmaker's current cap.
 func (m *Matchmaker) MaxPlayersFor(queued string) int {
 	players, _ := m.Sizing()

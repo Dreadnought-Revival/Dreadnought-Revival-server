@@ -1144,12 +1144,9 @@ func (m *Matchmaker) formMatchOfSize(gameMode string, tierMin int, fleetType int
 	for i, e := range entries {
 		playerIDs[i] = e.UserID
 	}
-	// A team size set on the admin dashboard goes to the battle server too:
-	// the mod fills each side with bots up to it (switches.go, DNTeamSize).
-	hostTeamSize, hostMaxPlayers := 0, 0
-	if size, set := TeamSizeFor(queuedMode); set {
-		hostTeamSize, hostMaxPlayers = size, size*TeamsIn(queuedMode)
-	}
+	// The team size goes to the battle server too: the mod fills each side
+	// with bots up to it (switches.go HostTeamSize, DNTeamSize).
+	hostTeamSize, hostMaxPlayers := HostTeamSize(queuedMode)
 	serverIP, serverPort, instanceID, battleMatchID, err := m.requestGameInstance(launchMode, mapName, chosen.Path, playerIDs, fleetTierURLValue(fleetType), hostTeamSize, hostMaxPlayers)
 	if err != nil {
 		// Rollback queue entries on failure
