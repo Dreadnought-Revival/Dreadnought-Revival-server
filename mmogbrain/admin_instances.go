@@ -58,6 +58,7 @@ func controlPlaneInstances() ([]adminInstance, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return nil, err
 	}
+	addMatchSlotPlayers(body.Instances)
 	for i := range body.Instances {
 		for _, pid := range body.Instances[i].Players {
 			body.Instances[i].PlayerNames = append(body.Instances[i].PlayerNames, adminPlayerName(pid))
@@ -67,18 +68,55 @@ func controlPlaneInstances() ([]adminInstance, error) {
 	return body.Instances, nil
 }
 
+// addMatchSlotPlayers finds each instance's match (MatchRef) and adds the
+// players the matchmaker put into it after it started. The control plane only
+// knows the players a match was formed with: a backfilled player (matchmaker/
+// backfill.go) gets a match_slots row and nothing else, so the Battle servers
+// page and the overview's count missed every late joiner.
+//
+// One lookup at a time, each result set closed before the next query (the
+// store has one connection).
+func addMatchSlotPlayers(list []adminInstance) {
+	database := currentMmogPlayerStateDB()
+	if database == nil {
+		return
+	}
+	for i := range list {
+		_ = database.QueryRow(`SELECT id FROM matches WHERE (? <> '' AND (id=? OR battle_match_id=?)) OR (? <> '' AND instance_id=?)
+			ORDER BY created_at DESC LIMIT 1`, list[i].MatchID, list[i].MatchID, list[i].MatchID, list[i].ID, list[i].ID).Scan(&list[i].MatchRef)
+		if list[i].MatchRef == "" {
+			continue
+		}
+		rows, err := database.Query(`SELECT user_id FROM match_slots WHERE match_id=? ORDER BY joined_at, user_id`, list[i].MatchRef)
+		if err != nil {
+			continue
+		}
+		var slots []string
+		for rows.Next() {
+			var pid string
+			if rows.Scan(&pid) == nil {
+				slots = append(slots, pid)
+			}
+		}
+		_ = rows.Close()
+		seen := map[string]bool{}
+		for _, pid := range list[i].Players {
+			seen[pid] = true
+		}
+		for _, pid := range slots {
+			if !seen[pid] {
+				seen[pid] = true
+				list[i].Players = append(list[i].Players, pid)
+			}
+		}
+	}
+}
+
 func adminAPIInstances(w http.ResponseWriter, _ *http.Request) {
 	list, err := controlPlaneInstances()
 	if err != nil {
 		writeAdminJSON(w, map[string]any{"error": "control plane unreachable: " + err.Error(), "instances": []any{}})
 		return
-	}
-	// One lookup per instance, none while a result set is open (one connection).
-	if database := currentMmogPlayerStateDB(); database != nil {
-		for i := range list {
-			_ = database.QueryRow(`SELECT id FROM matches WHERE (? <> '' AND (id=? OR battle_match_id=?)) OR (? <> '' AND instance_id=?)
-				ORDER BY created_at DESC LIMIT 1`, list[i].MatchID, list[i].MatchID, list[i].MatchID, list[i].ID, list[i].ID).Scan(&list[i].MatchRef)
-		}
 	}
 	for i := range list {
 		list[i].Log = instanceLogName(list[i].StartedAt, list[i].Port)
