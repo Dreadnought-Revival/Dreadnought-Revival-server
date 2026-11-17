@@ -56,8 +56,7 @@ func writeGreyboxError(w http.ResponseWriter, status int, code int, msg string) 
 //  1. Auto-login via Steam ticket:  request contains steam_ticket / grant_type=steam_ticket
 //  2. Password login (our custom):  request contains username + password
 //
-// Steam tickets sign in only accounts that route created before 2026-11-17;
-// unknown tickets are refused (loginSteam).
+// Steam tickets are refused since 2026-11-17 (see the isSteam branch).
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<16) // 64KB limit
 	rawBody, err := io.ReadAll(r.Body)
@@ -131,7 +130,14 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	isSteam := steamTicket != "" || strings.HasPrefix(grantType, "steam")
 
 	if isSteam {
-		h.loginSteam(w, steamTicket, rpcID)
+		// REMOVED 2026-11-17: Steam-ticket sign-in. The ticket was never
+		// verified (no Steamworks check), so it signed in -- and until the same
+		// day created -- an account for whatever bytes were sent; the old
+		// launcher built them from the PC and Windows user names. Only two
+		// accounts ever used it and neither ever reached the game. Accounts sign
+		// in with a username or email and a password.
+		h.Log.Warn("steam-ticket sign-in refused (removed)")
+		writeGreyboxError(w, http.StatusGone, -32001, "Steam sign-in was removed. Sign in with your account in the launcher.")
 		return
 	}
 	if username != "" {
@@ -141,62 +147,6 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	h.Log.Warn("auth request: unknown format, no steam_ticket or username found")
 	writeGreyboxError(w, http.StatusBadRequest, -32602, "Invalid request: no credentials provided")
-}
-
-// loginSteam signs in the account an earlier Steam ticket created. It used to
-// auto-create one for any unknown ticket; since 2026-11-17 it refuses those.
-// We hash the ticket bytes to get a stable "steam_id" without needing Steamworks validation.
-//
-// KNOWN TRUST-BOUNDARY LIMITATION (tracked issue #13): this does not call
-// Steam's ISteamUserAuth/AuthenticateUserTicket API, so it cannot actually
-// verify the caller possesses a genuine Steam session — it grants a fully
-// signed JWT for whatever identity results from hashing the caller-supplied
-// bytes. Real validation would require a Steamworks Web API key (and this
-// game's App ID) that isn't available in this project; fixing it properly
-// is out of reach without an operator supplying those credentials. Left
-// as-is with this warning rather than a partial/untested mitigation.
-func (h *Handler) loginSteam(w http.ResponseWriter, ticket string, rpcID interface{}) {
-	h.Log.Warn("steam login: accepting ticket without Steamworks validation (see tracked issue #13) — identity is not cryptographically verified")
-	// SHA256 of ticket bytes → stable 16-char hex ID for this Steam session
-	sum := sha256.Sum256([]byte(ticket))
-	steamID := fmt.Sprintf("%x", sum[:8]) // 16 hex chars
-
-	// Look up existing user by steam_id
-	var user models.User
-	err := h.DB.QueryRow(
-		`SELECT id, username, email FROM users WHERE steam_id=? AND banned_at IS NULL`,
-		steamID,
-	).Scan(&user.ID, &user.Username, &user.Email)
-
-	if err == sql.ErrNoRows {
-		// No auto-registration any more (audit 2026-11-17). The ticket is not
-		// verified (see above), so this route handed a new account to anyone
-		// for any bytes, without limit. Accounts are created with a username,
-		// email and password (/auth/register); the accounts this route made
-		// earlier still sign in here.
-		h.Log.WithField("steam_id", steamID).Warn("steam login: unknown ticket refused (no auto-registration)")
-		writeGreyboxError(w, http.StatusForbidden, -32001, "No account for this identity. Create an account in the launcher and sign in with it.")
-		return
-	} else if err != nil {
-		h.Log.WithError(err).Error("steam login: db query")
-		writeGreyboxError(w, http.StatusInternalServerError, -32603, "Login failed")
-		return
-	} else {
-		h.Log.WithFields(logrus.Fields{
-			fieldUserID:   user.ID,
-			fieldUsername: user.Username,
-			"steam_id":    steamID,
-		}).Info("steam user logged in")
-	}
-
-	// Steam ticket auth from the launcher uses JSON-RPC 2.0 (rpcID != nil).
-	// The launcher expects a JWT with aud="launcher".
-	// Direct game-client auth (plain form/JSON) gets aud="dreadnought".
-	audience := "dreadnought"
-	if rpcID != nil {
-		audience = "launcher"
-	}
-	h.issueAndReturnJWT(w, user, rpcID, audience)
 }
 
 // loginPassword handles classic username/password login (our custom /auth/register accounts).

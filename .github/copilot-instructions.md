@@ -87,7 +87,7 @@ SQLite is single-writer (`MaxOpenConns(1)`). All queries use parameterized state
 - Algorithm: **HS256** (HMAC-SHA256)
 - Claims: `sub`=user UUID, `username`, `realm`=`"dreadnought.pc-us"`, `aud`=`"dreadnought"` (game) or `"launcher"` (launcher Steam auth)
 - Auth validated by middleware → sets `X-User-ID` and `X-Username` headers for downstream handlers
-- The launcher sends auth as **JSON-RPC 2.0** (`method: "jwt.get.by_steam_ticket"`); responses must be wrapped in `{"jsonrpc":"2.0","id":<id>,"result":[true, userObject]}`
+- The launcher signs in with a password grant (form `grant_type=password`, `username`, `password` to `/auth/`). The Steam-ticket JSON-RPC method `jwt.get.by_steam_ticket` was removed on 2026-11-17 (answers 410).
 
 ### Auth middleware pattern
 Admin endpoints use `X-Admin-Key` header checked by `adminKeyMiddleware`. Authenticated user endpoints use `jwtMiddleware` which injects `X-User-ID`/`X-Username`.

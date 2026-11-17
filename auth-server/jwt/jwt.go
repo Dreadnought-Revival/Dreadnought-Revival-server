@@ -38,7 +38,7 @@ type Claims struct {
 
 // Issue creates and signs a new JWT for the given user using HMAC-SHA256.
 // audience should be "launcher" when called by the Dreadnought launcher
-// (jwt.get.by_steam_ticket), or "dreadnought" for in-game authentication.
+// (the launcher's sign-in; jwt.get.by_steam_ticket until 2026-11-17), or "dreadnought" for in-game authentication.
 func Issue(secret []byte, userID, username, audience string, ttl time.Duration) (string, error) {
 	now := time.Now()
 	// Use MapClaims so "aud" is serialized as a plain string, not []string.

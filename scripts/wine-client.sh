@@ -9,9 +9,13 @@
 #   SHOT_DIR=/somewhere bash scripts/wine-client.sh   # + PNGs of the running UI
 #
 # What it does, in order:
-#   1. runs dn-launcher.exe with DN_PLAYER_ID set, which authenticates against
-#      auth-server and DPAPI-writes the token into the Wine registry, then kills
-#      the client the launcher spawns (we want our own argv);
+#   1. runs dn-launcher.exe with DN_USERNAME/DN_PASSWORD set (a test account's
+#      sign-in, from run/secrets.env HARNESS_USERNAME/HARNESS_PASSWORD), which
+#      authenticates against auth-server and DPAPI-writes the token into the
+#      Wine registry, then kills the client the launcher spawns (we want our
+#      own argv). The launcher must be 2026-11-17 or newer (run/dn-launcher.exe
+#      from setup.sh, copied to $GAME_ROOT): the old DN_PLAYER_ID sign-in used
+#      the Steam-ticket route, removed that day;
 #   2. launches the client itself;
 #   3. dismisses the title screen with xdotool;
 #   4. lets it sit in the hangar for the requested time, then kills it.
@@ -32,12 +36,19 @@ OUT="${2:-/tmp/dn-wine-client.log}"
 : "${GAME_BIN_DIR:=$GAME_ROOT/DreadGame/DreadGame/Binaries/Win64}"
 : "${WINEPREFIX:=/root/.wine}"
 : "${DISPLAY:=:99}"
-# A stable id keeps the same test account (and its ships) across runs. The
-# launcher auto-registers it on first sight.
-: "${DN_PLAYER_ID:=claude-test-01}"
+# The test account: create it once in the launcher (or POST /auth/register)
+# and put its sign-in in run/secrets.env (gitignored), never in this file.
+if [ -z "${DN_USERNAME:-}" ] && [ -f "$(dirname "$0")/../run/secrets.env" ]; then
+    DN_USERNAME="$(grep '^HARNESS_USERNAME=' "$(dirname "$0")/../run/secrets.env" | cut -d= -f2- | tr -d '"')"
+    DN_PASSWORD="$(grep '^HARNESS_PASSWORD=' "$(dirname "$0")/../run/secrets.env" | cut -d= -f2- | tr -d '"')"
+fi
+if [ -z "${DN_USERNAME:-}" ] || [ -z "${DN_PASSWORD:-}" ]; then
+    echo "Set DN_USERNAME/DN_PASSWORD, or HARNESS_USERNAME/HARNESS_PASSWORD in run/secrets.env (a test account)." >&2
+    exit 1
+fi
 : "${CLIENT_CPUS:=4,5,6}"
 
-export WINEPREFIX DISPLAY DN_PLAYER_ID
+export WINEPREFIX DISPLAY DN_USERNAME DN_PASSWORD
 export WINEDEBUG=-all
 # No GPU here: the shipping build hard-requires DX11, which works through
 # software GL. Without these it page-faults during RHI init. -opengl does not
@@ -60,7 +71,7 @@ kill_clients() {
     done
 }
 
-echo "[harness] minting a fresh auth token as $DN_PLAYER_ID"
+echo "[harness] minting a fresh auth token as $DN_USERNAME"
 # NOT piped into grep. The launcher starts the game itself, and that child
 # INHERITS the launcher's stdout -- so a pipe stays open long after `timeout`
 # has killed the launcher, and the harness hangs here forever waiting on a grep
