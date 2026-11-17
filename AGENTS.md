@@ -235,6 +235,19 @@ before writing an entry; the protocol is in it. The parts that matter: append at
 the bottom, one commit per entry (`chat: <ID> <summary>`), never edit the other
 side's entries, and mark every claim `verified` or `suspected`.
 
+## Admin panel
+
+The Server Admin dashboard is served by mmogbrain itself: `GET /admin/dashboard` on its
+plain HTTP port (`ADDR`, default `:8083`), front end in `mmogbrain/admin_ui/` (embedded in
+the binary; one `pages/<page>.js` per page), JSON API under `/admin/api/*`. Access is one
+shared secret, `ADMIN_KEY`, sent as `X-Admin-Key` (no admin accounts or sessions). Every
+change is written to the `admin_audit` table. A new page is one `pages/*.js` file plus an
+`admin_<page>.go` that registers its routes from `init()` with `adminRegisterAPI`; the
+router-walking tests cover new routes automatically. Remember mmogbrain's SQLite has one
+connection: no DB call inside an open `rows` loop. Read the live DB only with
+`sqlite3 -readonly run/mmog.db`. Full map of pages, endpoints, tables and side effects:
+the `dreadnought-admin-panel` skill (`.claude/skills/dreadnought-admin-panel/SKILL.md`).
+
 ## Key Files
 
 - `go.work` — 8 modules; `dn-dedicated` is not one of them (and the launcher

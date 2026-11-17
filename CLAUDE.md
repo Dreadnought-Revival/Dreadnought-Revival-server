@@ -34,7 +34,7 @@ The old `darkace1998/Dreadnought-Revival-project` is archived; issue and PR numb
 
 ## Start here
 
-Five skills carry the parts of this project that are expensive to re-derive.
+Six skills carry the parts of this project that are expensive to re-derive.
 Load the relevant one BEFORE working, not after a failed attempt:
 
 | Skill | Use it when |
@@ -44,6 +44,7 @@ Load the relevant one BEFORE working, not after a failed attempt:
 | `dreadnought-rva` | "where does the client do X?"; verifying an RVA before trusting it |
 | `dreadnought-hooks` | adding a MinHook target in `battle-server-mod/` |
 | `dreadnought-verify` | before claiming a fix works |
+| `dreadnought-admin-panel` | changing or documenting the Server Admin dashboard (`mmogbrain/admin_ui/`, `admin_*.go`): auth, pages, endpoints, adding a page |
 
 `AGENT-CHAT.md` is the running log with the client-side project (`S##` ours,
 `C##` theirs). Read the last few entries first — it records what was tried, what
