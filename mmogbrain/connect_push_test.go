@@ -235,3 +235,32 @@ func TestConnectURLNameIsTravelSafe(t *testing.T) {
 		}
 	}
 }
+
+// MapName and GameType choose the battle loading screen (AYHUDBase::
+// OnStartTraveling 0x5889B0 via the delegate the YA_Connect arm fires at
+// 0x2A275FC). They must be the client's own GlobalUI ids: m_mapName and
+// m_gameModeID. Without them the client logged "Map: ; GameType:;" and showed
+// no loading screen.
+func TestConnectPushNamesMapAndModeForTheLoadingScreen(t *testing.T) {
+	cases := []struct {
+		mode, mapName, wantMode, wantMap string
+	}{
+		{"TE", "Gorge", "TE", "Gorge"},
+		{"BC", "Amirani", "BC", "Amirani"},
+		{"Havoc", "HVC_Map1", "HAVOC", "HVC_Map1_P"},
+		{"PVE", "PVE_S1E1", "PVE", ""},
+	}
+	for _, c := range cases {
+		st := readyStatus()
+		st.gameMode, st.mapName = c.mode, c.mapName
+		payload := buildMmogConnectPushPayload(st)
+		for _, want := range [][]byte{
+			protocol.AppendStringField(nil, "MapName", c.wantMap),
+			protocol.AppendStringField(nil, "GameType", c.wantMode),
+		} {
+			if !bytes.Contains(payload, want) {
+				t.Errorf("%s/%s: payload lacks %q", c.mode, c.mapName, want)
+			}
+		}
+	}
+}

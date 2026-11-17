@@ -744,7 +744,48 @@ func appendMmogConnectFields(b []byte, status mmogMatchmakingStatus) []byte {
 		pveEvent = status.mapName
 	}
 	b = protocol.AppendStringField(b, "PVEEvent", pveEvent)
+	// MapName and GameType pick the battle loading screen. Players saw none:
+	// the client logged "Battle server connect push received: Map: ;
+	// GameType:;" (client log 2026-11-17) because we never sent them. The
+	// YA_Connect arm of the dispatcher reads them from this push into
+	// mmog+0x3CA8 / a local (field-name globals 0x40E90C0 "MapName" and
+	// 0x40E90D8 "GameType", set at 0x2A23619 / 0x2A23691; reads at
+	// 0x2A27505 / 0x2A27544), then fires the delegate at mmog+0x260
+	// (0x2A1CF50) with (map, game type, PVEEvent) BEFORE it travels. That is
+	// AYHUDBase::OnStartTraveling (0x5889B0; the menu's override 0x4BE040),
+	// which builds the screen with UYUIData::GetLoadingScreenTexts (0x4EC800):
+	// game type "PVE" takes the event's data, anything else is looked up by
+	// map in GlobalUI m_multiplayerMaps (m_mapName -> m_loadingScreen picture)
+	// and by game type in m_loadingScreenGameModeData (m_gameModeID -> the
+	// mode's name, objective and three hint lines).
+	mapName, gameType := connectLoadingScreenIDs(status)
+	b = protocol.AppendStringField(b, "MapName", mapName)
+	b = protocol.AppendStringField(b, "GameType", gameType)
 	return b
+}
+
+// connectLoadingScreenIDs names the match's map and mode the way the client's
+// GlobalUI does. Our match rows already use its m_mapName / m_gameModeID for
+// every mode but Havoc: GlobalUI's mode id is "HAVOC" (havocClientName) and
+// its m_havocMaps entries are "HVC_Map1_P" / "HVC_Map2_P". A PvE match
+// travels with game type "PVE" and its event in PVEEvent; its map row holds
+// the event id, not a map name, so no MapName is sent.
+func connectLoadingScreenIDs(status mmogMatchmakingStatus) (mapName, gameType string) {
+	mapName, gameType = status.mapName, status.gameMode
+	switch gameType {
+	case matchmaker.PvEGameMode:
+		mapName = ""
+	case matchmaker.HavocGameMode:
+		gameType = "HAVOC"
+		if mapName != "" && !strings.HasSuffix(mapName, "_P") {
+			mapName += "_P"
+		}
+	case "Territory":
+		gameType = "TER"
+	case "Bootcamp":
+		gameType = "BC"
+	}
+	return mapName, gameType
 }
 
 func buildMmogMatchmakingPayload(requestName string, status mmogMatchmakingStatus) []byte {
