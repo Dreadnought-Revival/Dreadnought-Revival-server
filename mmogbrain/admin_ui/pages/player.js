@@ -2,7 +2,7 @@
 // sub tabs for everything the server knows about the player. Every value is
 // put on the page as text (Admin.el), never as markup.
 (() => {
-  const { $, el, api, apiText, postJSON, fmt, ago, when, duration, bytes, chip, card, table, kv, tabs, act, auditText, bars, link, modeName, setTitle, download } = Admin;
+  const { $, el, api, apiBlob, postJSON, fmt, ago, when, duration, bytes, chip, card, table, kv, tabs, act, auditText, bars, link, modeName, setTitle, download } = Admin;
   let P = null; let openedTab = ''; let pid = ''; let tabCtl = null; let invFilter = '';
 
   // The contracts' in-game names (MPQuestCollection m_name, English).
@@ -275,10 +275,16 @@
     ];
   }
 
-  const logButton = (g) => el('button', { class: 'btn small', type: 'button', onclick: async () => {
-    const r = await act(() => apiText('/client-logs/' + g.id), msg(), 'Downloaded.');
-    if (r) download(r.name, r.text, 'text/plain');
-  } }, 'Download');
+  // The whole log as text, or (.gz) as it is stored: about a tenth of the size.
+  const logButton = (g) => el('span', { class: 'row', style: 'margin:0' },
+    el('button', { class: 'btn small', type: 'button', onclick: async () => {
+      const r = await act(() => apiBlob('/client-logs/' + g.id), msg(), 'Downloaded.');
+      if (r) download(r.name, r.blob);
+    } }, 'Download'),
+    el('button', { class: 'btn small', type: 'button', title: 'The stored file, gzip-compressed', onclick: async () => {
+      const r = await act(() => apiBlob('/client-logs/' + g.id + '?gzip=1'), msg(), 'Downloaded.');
+      if (r) download(r.name, r.blob);
+    } }, '.gz'));
 
   function tabReports() {
     const r = P.reports; const t = P.telemetry;
@@ -292,8 +298,8 @@
           g.seconds ? duration(g.seconds) : '—',
           g.crashed ? chip('crashed (exit ' + g.exit_code + ')', 'bad') : g.late ? chip('sent at next start', 'warn')
             : g.exit_code !== 0 ? chip('closed, crashed on exit (' + g.exit_code + ')', 'warn') : chip('closed', 'good'),
-          bytes(g.bytes), g.launcher_version || '—', logButton(g)]), 'No game logs uploaded yet.'),
-        el('div', { class: 'muted' }, 'The launcher uploads DreadGame.log when the game closes, without the sign-in token and the Windows computer and user names. "Crashed on exit": the game shut down completely, then its process ended with an error code (0xC0000005 = 3221225477 on every quit, harmless).')),
+          bytes(g.bytes) + (g.stored_bytes ? ' (' + bytes(g.stored_bytes) + ' stored)' : ''), g.launcher_version || '—', logButton(g)]), 'No game logs uploaded yet.'),
+        el('div', { class: 'muted' }, 'The launcher uploads the whole DreadGame.log when the game closes (since launcher v1.0.11; older ones sent only the first 256 KiB and the last 1.75 MiB, which is all the game kept), without the sign-in token and the Windows computer and user names. "Crashed on exit": the game shut down completely, then its process ended with an error code (0xC0000005 = 3221225477 on every quit, harmless).')),
     ];
   }
 

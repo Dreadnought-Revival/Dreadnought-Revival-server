@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -123,14 +124,14 @@ func TestLauncherLogUpload(t *testing.T) {
 	}
 }
 
-// Old logs and logs past the size cap are deleted, files included.
+// Old logs are deleted, files included (the size budgets: see
+// TestPruneClientLogsDiskBudget).
 func TestPruneClientLogs(t *testing.T) {
 	database := useTempMmogPlayerStateDB(t)
-	oldDir, oldMax := clientLogDir, clientLogMaxBytes
+	oldDir := clientLogDir
 	clientLogDir = t.TempDir()
-	t.Cleanup(func() { clientLogDir, clientLogMaxBytes = oldDir, oldMax })
-	clientLogMaxBytes = 250
-	for i, at := range []string{"2000-01-01 00:00:00", "now", "now", "now"} {
+	t.Cleanup(func() { clientLogDir = oldDir })
+	for i, at := range []string{"2000-01-01 00:00:00", "now", "now"} {
 		rel := "p/" + string(rune('a'+i)) + ".log.gz"
 		if err := writeClientLogFile(clientLogDir+"/"+rel, []byte("x")); err != nil {
 			t.Fatal(err)
@@ -146,7 +147,10 @@ func TestPruneClientLogs(t *testing.T) {
 	}
 	pruneClientLogs(database)
 	left := clientLogRows(database, `ORDER BY id`)
-	if len(left) != 2 || left[0].ID != 3 || left[1].ID != 4 {
-		t.Fatalf("left %+v, want ids 3 and 4 (1 too old, 2 past the size cap)", left)
+	if len(left) != 2 || left[0].ID != 2 || left[1].ID != 3 {
+		t.Fatalf("left %+v, want ids 2 and 3 (1 too old)", left)
+	}
+	if _, err := os.Stat(clientLogDir + "/p/a.log.gz"); err == nil {
+		t.Errorf("the file of the old log is still on disk")
 	}
 }

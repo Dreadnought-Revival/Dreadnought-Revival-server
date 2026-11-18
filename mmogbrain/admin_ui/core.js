@@ -49,6 +49,14 @@ window.Admin = (() => {
     if (!res.ok) { let m = text; try { m = JSON.parse(text).error || text; } catch (e) {} throw new Error(m.trim() || res.statusText); }
     return { text, name: ((res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/) || [])[1] || 'download.txt' };
   }
+  // apiBlob: like apiText, but the file stays binary (a whole session's game log
+  // can be hundreds of MB: as a string it would not fit) and a name is returned.
+  async function apiBlob(path) {
+    const res = await fetch('/admin/api' + path, { headers: { 'X-Admin-Key': key || '' } });
+    if (res.status === 403) { lock('That key was not accepted.'); throw new Error('forbidden'); }
+    if (!res.ok) { const t = await res.text(); let m = t; try { m = JSON.parse(t).error || t; } catch (e) {} throw new Error(m.trim() || res.statusText); }
+    return { blob: await res.blob(), name: ((res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/) || [])[1] || 'download.bin' };
+  }
   const postJSON = (path, body) => api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
 
   // --- building the page ----------------------------------------------------
@@ -155,7 +163,7 @@ window.Admin = (() => {
   const debounce = (fn, ms = 250) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
   const toCSV = (rows) => rows.map((r) => r.map((c) => { const s = c == null ? '' : String(c); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(',')).join('\n');
   function download(name, text, mime) {
-    const a = el('a', { href: URL.createObjectURL(new Blob([text], { type: mime || 'text/plain' })), download: name });
+    const a = el('a', { href: URL.createObjectURL(text instanceof Blob ? text : new Blob([text], { type: mime || 'text/plain' })), download: name });
     document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
@@ -401,7 +409,7 @@ window.Admin = (() => {
   }
 
   return {
-    $, el, svg, api, apiText, postJSON, fmt, compact, ago, when, duration, bytes, parseTime, card, chip, fill, table, kv, tabs, toast, act, debounce, toCSV, download,
+    $, el, svg, api, apiText, apiBlob, postJSON, fmt, compact, ago, when, duration, bytes, parseTime, card, chip, fill, table, kv, tabs, toast, act, debounce, toCSV, download,
     MODE_NAMES, modeName, FLEET_NAMES, fleetName, auditText, SERIES, chart, bars, meter,
     page, go, link, playerLink, href, setBadge, setTitle, refresh, schedule, start,
     arg: () => currentArg,

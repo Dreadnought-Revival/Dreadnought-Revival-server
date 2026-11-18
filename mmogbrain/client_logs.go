@@ -19,6 +19,17 @@ package main
 //
 // Files live in <DB folder>/client-logs/<player>/; the client_logs table
 // (db/db.go) indexes them. Admins list and download them on the player page.
+//
+// Two upload forms, both accepted:
+//
+//   - one POST of the whole gzip-compressed log (launchers up to v1.0.10);
+//     capped at clientLogMaxUpload compressed / clientLogMaxRaw raw, because the
+//     body is read into memory and the HTTP server gives a request 15 s;
+//   - chunked (client_logs_chunked.go): the launcher sends the log in
+//     line-aligned parts, then commits. A whole session's log (tens to
+//     hundreds of MB raw, the game no longer keeps only its last 2 MiB) gets
+//     through slow or flaky connections, and nothing here holds a whole log in
+//     memory.
 
 import (
 	"bytes"
@@ -42,12 +53,11 @@ import (
 )
 
 const (
-	// clientLogMaxUpload is the largest compressed body accepted.
+	// clientLogMaxUpload is the largest compressed body of the one-POST form.
 	clientLogMaxUpload = 8 << 20
-	// clientLogMaxRaw is the largest log accepted once decompressed. A normal
-	// session's log is about 0.3 MB; a detailed (verbose) one can run to tens
-	// of MB, and the launcher cuts anything past 40 MB down to its start and
-	// its end.
+	// clientLogMaxRaw is the largest log of the one-POST form once
+	// decompressed (launchers up to v1.0.10 cut anything past 40 MB down to
+	// its start and its end). The chunked form has its own, larger limits.
 	clientLogMaxRaw = 48 << 20
 	// clientLogMinGap and clientLogPerDay limit how often one player can
 	// upload: a session is minutes long, so this only stops a loop.
@@ -58,11 +68,14 @@ const (
 var (
 	// clientLogDir is where the files go; main sets it beside the database.
 	clientLogDir = "client-logs"
-	// clientLogKeepDays and clientLogMaxBytes bound what is kept: older
-	// logs, and the oldest logs past the total size, are deleted after each
-	// upload. CLIENT_LOG_DAYS / CLIENT_LOG_MAX_MB override them.
-	clientLogKeepDays       = 30
-	clientLogMaxBytes int64 = 2 << 30
+	// clientLogKeepDays, clientLogMaxBytes and clientLogPlayerMaxBytes bound
+	// what is kept: older logs, and the oldest logs past a size, are deleted
+	// after each upload. The sizes are DISK bytes (the stored .gz files), in
+	// total and per player. CLIENT_LOG_DAYS / CLIENT_LOG_MAX_MB /
+	// CLIENT_LOG_PLAYER_MAX_MB override them.
+	clientLogKeepDays             = 30
+	clientLogMaxBytes       int64 = 2 << 30
+	clientLogPlayerMaxBytes int64 = 256 << 20
 
 	clientLogMu      sync.Mutex // guards clientLogLast
 	clientLogLast    = map[string]time.Time{}
@@ -76,6 +89,9 @@ func configureClientLogs(dbPath string) {
 	}
 	if n, err := strconv.ParseInt(os.Getenv("CLIENT_LOG_MAX_MB"), 10, 64); err == nil && n > 0 {
 		clientLogMaxBytes = n << 20
+	}
+	if n, err := strconv.ParseInt(os.Getenv("CLIENT_LOG_PLAYER_MAX_MB"), 10, 64); err == nil && n > 0 {
+		clientLogPlayerMaxBytes = n << 20
 	}
 }
 
@@ -122,45 +138,41 @@ func parseClientLogMeta(r *http.Request) clientLogMeta {
 	return m
 }
 
-// launcherLogHandler: POST /launcher/log?modified=&exit=&crashed=&seconds=&late=&version=
-// with the gzip-compressed log as the body.
-func launcherLogHandler(w http.ResponseWriter, r *http.Request) {
+// launcherLogAuth is the signed-in player of an upload request and the
+// database, or answers the request itself and says so.
+func launcherLogAuth(w http.ResponseWriter, r *http.Request) (string, *sql.DB, bool) {
 	token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 	pid, err := protocol.ExtractVerifiedPlayerPIDFromJWT(token, mmogJWTSecret(), "launcher", "dreadnought")
 	pid = protocol.NormalizePlayerPID(pid)
 	if err != nil || !adminPIDPattern.MatchString(pid) {
 		http.Error(w, `{"error":"sign in first"}`, http.StatusUnauthorized)
-		return
+		return "", nil, false
 	}
 	database := currentMmogPlayerStateDB()
 	if database == nil {
 		http.Error(w, `{"error":"not ready"}`, http.StatusServiceUnavailable)
+		return "", nil, false
+	}
+	return pid, database, true
+}
+
+// launcherLogHandler: POST /launcher/log?modified=&exit=&crashed=&seconds=&late=&version=
+// with the gzip-compressed log as the body (the one-POST form).
+func launcherLogHandler(w http.ResponseWriter, r *http.Request) {
+	pid, database, ok := launcherLogAuth(w, r)
+	if !ok {
 		return
 	}
 	meta := parseClientLogMeta(r)
 
 	// A retry of a log already stored is answered as done.
-	if meta.modified > 0 {
-		var id int64
-		if database.QueryRow(`SELECT id FROM client_logs WHERE user_id=? AND log_modified=?`, pid, meta.modified).Scan(&id) == nil {
-			writeLauncherLogReply(w, id, true)
-			return
-		}
-	}
-	var today int
-	_ = database.QueryRow(`SELECT COUNT(*) FROM client_logs WHERE user_id=? AND uploaded_at > datetime('now','-1 day')`, pid).Scan(&today)
-	if today >= clientLogPerDay {
-		http.Error(w, `{"error":"too many uploads today"}`, http.StatusTooManyRequests)
+	if id, ok := clientLogStored(database, pid, meta.modified); ok {
+		writeLauncherLogReply(w, id, true)
 		return
 	}
-	clientLogMu.Lock()
-	if last, ok := clientLogLast[pid]; ok && time.Since(last) < clientLogMinGap {
-		clientLogMu.Unlock()
-		http.Error(w, `{"error":"too many uploads, try again later"}`, http.StatusTooManyRequests)
+	if !clientLogAllowUpload(w, database, pid, true) {
 		return
 	}
-	clientLogLast[pid] = time.Now()
-	clientLogMu.Unlock()
 
 	raw, status, err := readClientLogBody(w, r)
 	if err != nil {
@@ -169,25 +181,76 @@ func launcherLogHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	raw = redactClientLog(raw)
 
-	rel := filepath.Join(pid, fmt.Sprintf("%s-%d.log.gz", time.Now().UTC().Format("20060102-150405"), time.Now().UnixNano()%1e6))
+	rel := newClientLogRel(pid)
 	if err := writeClientLogFile(filepath.Join(clientLogDir, rel), raw); err != nil {
 		logrus.WithError(err).Warn("launcher log: could not save the file")
 		http.Error(w, `{"error":"could not save"}`, http.StatusInternalServerError)
 		return
 	}
-	res, err := database.Exec(`INSERT INTO client_logs(user_id, log_modified, exit_code, crashed, seconds, late, launcher_version, bytes, path)
-		VALUES(?,?,?,?,?,?,?,?,?)`, pid, meta.modified, meta.exitCode, meta.crashed, meta.seconds, meta.late, meta.version, len(raw), filepath.ToSlash(rel))
+	id, err := insertClientLog(database, pid, meta, int64(len(raw)), rel)
 	if err != nil {
 		_ = os.Remove(filepath.Join(clientLogDir, rel))
-		logrus.WithError(err).Warn("launcher log: could not save the row")
 		http.Error(w, `{"error":"could not save"}`, http.StatusInternalServerError)
 		return
 	}
-	id, _ := res.LastInsertId()
-	logrus.WithFields(logrus.Fields{"id": id, "bytes": len(raw), "exit_code": meta.exitCode, "crashed": meta.crashed,
-		"late": meta.late, "launcher": meta.version}).Info("launcher log: saved")
 	pruneClientLogs(database)
 	writeLauncherLogReply(w, id, false)
+}
+
+// clientLogStored is the row of a log this player already uploaded (same
+// session, by the log file's modified time): a launcher retry.
+func clientLogStored(database *sql.DB, pid string, modified int64) (int64, bool) {
+	if modified <= 0 {
+		return 0, false
+	}
+	var id int64
+	if database.QueryRow(`SELECT id FROM client_logs WHERE user_id=? AND log_modified=?`, pid, modified).Scan(&id) != nil {
+		return 0, false
+	}
+	return id, true
+}
+
+// clientLogAllowUpload applies the per-day limit and, when gap is set, the
+// minimum gap between two uploads of one player; it answers 429 itself. The
+// chunked form checks the day limit on its first part and both on its commit.
+func clientLogAllowUpload(w http.ResponseWriter, database *sql.DB, pid string, gap bool) bool {
+	var today int
+	_ = database.QueryRow(`SELECT COUNT(*) FROM client_logs WHERE user_id=? AND uploaded_at > datetime('now','-1 day')`, pid).Scan(&today)
+	if today >= clientLogPerDay {
+		http.Error(w, `{"error":"too many uploads today"}`, http.StatusTooManyRequests)
+		return false
+	}
+	if !gap {
+		return true
+	}
+	clientLogMu.Lock()
+	defer clientLogMu.Unlock()
+	if last, ok := clientLogLast[pid]; ok && time.Since(last) < clientLogMinGap {
+		http.Error(w, `{"error":"too many uploads, try again later"}`, http.StatusTooManyRequests)
+		return false
+	}
+	clientLogLast[pid] = time.Now()
+	return true
+}
+
+// newClientLogRel is a fresh file name (relative to clientLogDir) for a log.
+func newClientLogRel(pid string) string {
+	now := time.Now().UTC()
+	return filepath.Join(pid, fmt.Sprintf("%s-%d.log.gz", now.Format("20060102-150405"), now.UnixNano()%1e6))
+}
+
+// insertClientLog indexes a stored log; bytes is its size once decompressed.
+func insertClientLog(database *sql.DB, pid string, meta clientLogMeta, bytes int64, rel string) (int64, error) {
+	res, err := database.Exec(`INSERT INTO client_logs(user_id, log_modified, exit_code, crashed, seconds, late, launcher_version, bytes, path)
+		VALUES(?,?,?,?,?,?,?,?,?)`, pid, meta.modified, meta.exitCode, meta.crashed, meta.seconds, meta.late, meta.version, bytes, filepath.ToSlash(rel))
+	if err != nil {
+		logrus.WithError(err).Warn("launcher log: could not save the row")
+		return 0, err
+	}
+	id, _ := res.LastInsertId()
+	logrus.WithFields(logrus.Fields{"id": id, "bytes": bytes, "exit_code": meta.exitCode, "crashed": meta.crashed,
+		"late": meta.late, "launcher": meta.version}).Info("launcher log: saved")
+	return id, nil
 }
 
 func writeLauncherLogReply(w http.ResponseWriter, id int64, duplicate bool) {
@@ -251,21 +314,29 @@ type clientLogRow struct {
 	Late     bool   `json:"late"`
 	Version  string `json:"launcher_version"`
 	Bytes    int64  `json:"bytes"`
-	path     string
+	// Stored is the size of the .gz file on disk; Bytes is the log's own.
+	Stored int64 `json:"stored_bytes"`
+	path   string
+	user   string
 }
 
 // clientLogRows runs a client_logs query and closes the result set before it
 // returns (single DB connection: see dreadnought-single-connection-db).
 func clientLogRows(database *sql.DB, where string, args ...any) []clientLogRow {
 	out := []clientLogRow{}
-	rows, err := database.Query(`SELECT id, uploaded_at, exit_code, crashed, seconds, late, launcher_version, bytes, path FROM client_logs `+where, args...)
+	rows, err := database.Query(`SELECT id, uploaded_at, exit_code, crashed, seconds, late, launcher_version, bytes, path, user_id FROM client_logs `+where, args...)
 	if err != nil {
 		return out
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var c clientLogRow
-		if rows.Scan(&c.ID, &c.At, &c.ExitCode, &c.Crashed, &c.Seconds, &c.Late, &c.Version, &c.Bytes, &c.path) == nil {
+		if rows.Scan(&c.ID, &c.At, &c.ExitCode, &c.Crashed, &c.Seconds, &c.Late, &c.Version, &c.Bytes, &c.path, &c.user) == nil {
+			if p, ok := clientLogPath(c.path); ok {
+				if st, err := os.Stat(p); err == nil {
+					c.Stored = st.Size()
+				}
+			}
 			out = append(out, c)
 		}
 	}
@@ -277,16 +348,21 @@ func playerClientLogs(database *sql.DB, pid string, limit int) []clientLogRow {
 }
 
 // pruneClientLogs deletes logs older than clientLogKeepDays, then the oldest
-// ones past clientLogMaxBytes in total.
+// ones past clientLogPlayerMaxBytes for their player and past clientLogMaxBytes
+// in total (disk bytes of the stored files), and uploads that were never
+// committed.
 func pruneClientLogs(database *sql.DB) {
 	clientLogPruneMu.Lock()
 	defer clientLogPruneMu.Unlock()
+	pruneClientLogIncoming(time.Now())
 	all := clientLogRows(database, `ORDER BY id DESC`)
 	cutoff := time.Now().UTC().AddDate(0, 0, -clientLogKeepDays).Format("2006-01-02 15:04:05")
 	var total int64
+	perPlayer := map[string]int64{}
 	for _, c := range all {
-		total += c.Bytes
-		if c.At >= cutoff && total <= clientLogMaxBytes {
+		if c.At >= cutoff && total+c.Stored <= clientLogMaxBytes && perPlayer[c.user]+c.Stored <= clientLogPlayerMaxBytes {
+			total += c.Stored
+			perPlayer[c.user] += c.Stored
 			continue
 		}
 		if p, ok := clientLogPath(c.path); ok {
@@ -351,14 +427,24 @@ func adminAPIClientLogDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
+	// A whole session's log can be hundreds of MB: more than the server's
+	// 15 s write timeout gives (and ?gzip=1 sends the stored file as it is,
+	// about a tenth of that).
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Minute))
+	name := fmt.Sprintf("DreadGame-%s-%s.log", pid[:8], strings.NewReplacer(" ", "_", ":", "-").Replace(at))
+	w.Header().Set("Cache-Control", "no-store")
+	if r.URL.Query().Get("gzip") == "1" {
+		w.Header().Set("Content-Type", "application/gzip")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.gz"`)
+		_, _ = io.Copy(w, f)
+		return
+	}
 	zr, err := gzip.NewReader(f)
 	if err != nil {
 		http.Error(w, `{"error":"broken file"}`, http.StatusInternalServerError)
 		return
 	}
-	name := fmt.Sprintf("DreadGame-%s-%s.log", pid[:8], strings.NewReplacer(" ", "_", ":", "-").Replace(at))
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
-	w.Header().Set("Cache-Control", "no-store")
 	_, _ = io.Copy(w, zr)
 }

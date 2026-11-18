@@ -393,6 +393,9 @@ func newRouter(h *handlers.Handler, secret []byte, adminKey, internalAPIKey stri
 	r.HandleFunc("/launcher/clock", launcherClockHandler).Methods(http.MethodPost)
 	// The launcher's upload of the game log after a session (client_logs.go).
 	r.HandleFunc("/launcher/log", launcherLogHandler).Methods(http.MethodPost)
+	// The same, in parts for a whole session's log (client_logs_chunked.go).
+	r.HandleFunc("/launcher/log/part", launcherLogPartHandler).Methods(http.MethodPost)
+	r.HandleFunc("/launcher/log/commit", launcherLogCommitHandler).Methods(http.MethodPost)
 
 	// Admin dashboard (admin_dashboard.go): registered before the /admin
 	// subrouter so the static page is served without a key; its data API
