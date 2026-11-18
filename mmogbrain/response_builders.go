@@ -3544,6 +3544,103 @@ func techTreeHeroItems() []techTreeItem {
 	return items
 }
 
+// techTreeHeroModuleItems is each hero's own module record: its secondary
+// weapon and four abilities (the five "module" slots, slot types 2-6 of
+// 0x140541CD0), filed under the HERO's loadout id.
+//
+// Why: UTechTreeInterpreter::ComposeModuleUiDataForShip logged "Modules not
+// found for ship id 670433xx" for every owned hero (29 distinct ids) because
+// FindShipTechTreeData (0x1403F5050) scans the per-ship records by ClassId and
+// no module entry carried a hero's id -- a hero node's own ClassId is its line
+// anchor (techTreeHullClassID). The consequence beyond the log line: a hero's
+// weapons and abilities that no base hull researches (Nordlander's five, the
+// Morningstars', Marauder's, ...: 31 of the 240 fit entries) were in NO
+// record, so find-by-id (0x1403F51A0) missed, GetModulePurchaseState
+// (0xAA7D00) answered 0 and the module screen kept the designer placeholder
+// "99999" (see
+// techTreeFittedAnchorItems). With a record they resolve to an entry whose
+// ClassId is the hero, and GetTechTreeItemState (0x543890) takes the
+// "fitted to the ship and the ship is in inventory" branch (0x53BE30 ->
+// 0x33D4B0): 4 for a hero the player owns, 1 for one they do not -- never 2
+// (researchable) or 3 (purchasable). Hero modules are fixed; they cannot be
+// researched or bought (operator rule, 2026-11-18).
+//
+// What it deliberately does not do, all read from the decompile:
+//
+//   - It is not part of techTreeBaseItems: nothing server-side (research cost,
+//     prerequisites, hull gates, the dashboard's cost overrides) sees these
+//     entries, so a hero module can never be researched or priced through them.
+//   - No XP cost, no prerequisite, no UI child. The module entries carry only
+//     what the minimal form carries (appendMmogTechTreeModuleItem). A page's
+//     composer (0x1404F3190 -> 0x1404E1D80) walks a module entry's UI children
+//     for the page id; with none, a hero module is on no tech tree page.
+//   - No primary weapon. A base ship's record never carries one either
+//     (primaries are not researched; techTreeFittedAnchorItems), and
+//     ComposeModuleUiDataForShip (0x140A98F40) skips a record item only when it
+//     equals the loadout's secondary or one of its +0x158 ability ids -- a
+//     primary would be drawn a second time. The five ids here are exactly the
+//     ones it skips, so the hangar bar draws nothing twice.
+//   - No officer perks (slot types 7-10 do not come from a record).
+//   - Nothing in the manufacturer groups: the loader (0x14040152C-0x140401699)
+//     files an item there only when its own id is a ship or hero.
+//   - No recursion: the walk at 0x1403F4880 follows ClassId to a node whose Id
+//     equals it. A hero module -> its hero (found) -> the hero's ClassId, the
+//     line anchor, which is no node's Id: it stops. The hero's own ClassId is
+//     unchanged.
+//
+// ORDER MATTERS, and is why these are emitted after everything else
+// (buildMmogTechTreeDocumentWith). Most of a hero's fit ids are ALSO research
+// items of the base hull of the hero's tier (a hero's fit is that hull's tier-t
+// rows). find-by-id returns the FIRST record holding an id, and the loader
+// appends records in document order (209 of the 240 entries are such shared
+// ids). Base records first means the base copy
+// keeps answering for those ids exactly as before; were a hero's copy first,
+// 0x543890 would read the base hull's research module as "fitted to the hero"
+// -- 4 for its owners, 1 (locked) for everyone else, which would stop them
+// researching it. TestTechTreeHeroModuleRecords pins the order.
+//
+// The flip side: for the ids a hero shares with a base hull the hero's record
+// changes nothing the player sees; their state is still the base copy's
+// (PurchasesData, see clientOwnedItemIDs). Only the log line goes away.
+func techTreeHeroModuleItems() []techTreeItem {
+	var items []techTreeItem
+	for _, hero := range heroShipLoadouts {
+		manufacturerID := shipManufacturerID(hero.manufacturer)
+		if manufacturerID < 0 {
+			continue // no hero node (techTreeHeroItems), so no record to hang these on
+		}
+		class := eyShipClassByKey[hero.hullLine]
+		seen := map[int32]bool{}
+		for _, shared := range append([]int32{hero.secondary}, hero.abilities[:]...) {
+			if shared <= 0 {
+				continue
+			}
+			id := inflatedItemID(shared, class)
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			tier := hero.tier
+			if row, ok := perShipResearchRow(id); ok {
+				tier = row.Tier
+			}
+			items = append(items, techTreeItem{
+				id:           id,
+				classID:      hero.loadoutID,
+				manufacturer: manufacturerID,
+				// GUESS: the preview row's tier where the client's table has
+				// one, else the hero's own. Read only by tier groupings; the
+				// module screen takes its tier from the item cache.
+				tier: techTreeWireTier(tier),
+				// No price: nothing to research or buy.
+				xpCost: 0,
+				module: true,
+			})
+		}
+	}
+	return items
+}
+
 // buildMmogTechTreeDocument emits the tech tree the client actually reads.
 //
 // It is built from the base hull roster rather than from the response's ship
@@ -3688,6 +3785,20 @@ func buildMmogTechTreeDocumentWith(noModules bool) []byte {
 		for _, item := range byManufacturer[manufacturerID] {
 			if limit > 0 && emitted >= limit {
 				break
+			}
+			b, stack = appendMmogTechTreeItem(b, stack, item)
+			emitted++
+		}
+	}
+	// Hero module records LAST: find-by-id must reach a base hull's copy of a
+	// shared id first (techTreeHeroModuleItems).
+	if !noModules {
+		for _, item := range techTreeHeroModuleItems() {
+			if limit > 0 && emitted >= limit {
+				break
+			}
+			if techTreeOnlyManufacturer >= 0 && item.manufacturer != int32(techTreeOnlyManufacturer) {
+				continue
 			}
 			b, stack = appendMmogTechTreeItem(b, stack, item)
 			emitted++

@@ -241,7 +241,15 @@ var targetSizes = map[string]int{
 	// tree (every line's first ship's fit, and each later ship's own primary),
 	// filed under their line's anchor (techTreeFittedAnchorItems). Without them
 	// an owned ship's module details showed the "99999" placeholder (2026-10-25).
-	"YA_GetTechTree": 17160,
+	// 17160 -> 19503 (+2343): a module record per hero (techTreeHeroModuleItems):
+	// 240 minimal entries (the 48 heroes' secondary weapon and four abilities,
+	// ClassId = the hero's loadout id), after every base record. The client logged
+	// "Modules not found for ship id 670433xx" for each owned hero because no
+	// record was keyed by a hero's id, and the 31 fit entries no base hull
+	// researches were in no record at all ("99999"). The budget is 28000
+	// (techTreeFrameBudget, the client's 32768-byte ring less margin; shipped
+	// 27,578 before), so this leaves 8.5 KB.
+	"YA_GetTechTree": 19503,
 	// Was 1035, +185 after fixing int32-blindness (CurrentXP/CurrentRank/
 	// RankXP/XPToNextRank/NumUnlockedShips and per-ship shipID/xp/tier now
 	// numeric strings, matching the rest of this payload family).
