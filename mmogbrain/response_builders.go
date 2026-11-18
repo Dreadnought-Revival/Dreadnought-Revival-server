@@ -960,6 +960,13 @@ func mmogRoomResponseName(requestName string) string {
 		return "YA_CustomRoomEnterFleetSelectResponse"
 	case "YA_CustomRoomExitFleetSelect":
 		return "YA_CustomRoomExitFleetSelectResponse"
+	// The client's arms compare these with "Response" (dispatcher 0x2A2A933
+	// / 0x2A2ABDA); without them the replies went out under the request's
+	// own name and the lobby never saw them (2026-11-18).
+	case "YA_CustomRoomStartMatchCountdown":
+		return "YA_CustomRoomStartMatchCountdownResponse"
+	case "YA_CustomRoomCancelMatchCountdown":
+		return "YA_CustomRoomCancelMatchCountdownResponse"
 	default:
 		return requestName
 	}

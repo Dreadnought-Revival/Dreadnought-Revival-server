@@ -572,24 +572,6 @@ var migrations = []string{
 		pm         TEXT NOT NULL DEFAULT '',
 		updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
-	// Game logs the launcher uploads after a session (client_logs.go). The
-	// file itself is on disk (path, relative to the client-logs folder);
-	// log_modified is the log's own time stamp, so a retried upload of the
-	// same file is recognised.
-	`CREATE TABLE IF NOT EXISTS client_logs (
-		id               INTEGER PRIMARY KEY AUTOINCREMENT,
-		user_id          TEXT NOT NULL,
-		uploaded_at      TEXT NOT NULL DEFAULT (datetime('now')),
-		log_modified     INTEGER NOT NULL DEFAULT 0,
-		exit_code        INTEGER NOT NULL DEFAULT -1,
-		crashed          INTEGER NOT NULL DEFAULT 0,
-		seconds          INTEGER NOT NULL DEFAULT 0,
-		late             INTEGER NOT NULL DEFAULT 0,
-		launcher_version TEXT NOT NULL DEFAULT '',
-		bytes            INTEGER NOT NULL DEFAULT 0,
-		path             TEXT NOT NULL
-	)`,
-	`CREATE INDEX IF NOT EXISTS client_logs_user ON client_logs(user_id, id)`,
 	// A balance stops at what the wire and the Go side hold: 2147483647
 	// (int32). The columns are 64-bit and every earning is added in SQL
 	// ("soft_currency = soft_currency + ?"), so nothing stopped a sum there;
@@ -661,6 +643,31 @@ var migrations = []string{
 		created_at TEXT NOT NULL DEFAULT (datetime('now'))
 	)`,
 	`CREATE INDEX IF NOT EXISTS admin_player_notes_user ON admin_player_notes(user_id, id)`,
+	// APPEND ONLY from here on: migrations are numbered by their position
+	// (see migrate), so an entry inserted higher up shifts every later one.
+	// client_logs was first inserted after player_clock (2026-11-17) and ran
+	// only because every shifted entry was a repeatable CREATE; moved here.
+	// Game logs the launcher uploads after a session (client_logs.go). The
+	// file itself is on disk (path, relative to the client-logs folder);
+	// log_modified is the log's own time stamp, so a retried upload of the
+	// same file is recognised.
+	`CREATE TABLE IF NOT EXISTS client_logs (
+		id               INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id          TEXT NOT NULL,
+		uploaded_at      TEXT NOT NULL DEFAULT (datetime('now')),
+		log_modified     INTEGER NOT NULL DEFAULT 0,
+		exit_code        INTEGER NOT NULL DEFAULT -1,
+		crashed          INTEGER NOT NULL DEFAULT 0,
+		seconds          INTEGER NOT NULL DEFAULT 0,
+		late             INTEGER NOT NULL DEFAULT 0,
+		launcher_version TEXT NOT NULL DEFAULT '',
+		bytes            INTEGER NOT NULL DEFAULT 0,
+		path             TEXT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS client_logs_user ON client_logs(user_id, id)`,
+	// Custom room matches (custom_rooms.go): recorded and played like any
+	// match, but they pay no rewards (battle_result.go).
+	`ALTER TABLE matches ADD COLUMN custom INTEGER NOT NULL DEFAULT 0`,
 }
 
 func Open(path string) (*sql.DB, error) {

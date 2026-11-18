@@ -106,6 +106,11 @@ func handleMmogConn(log *logrus.Logger, conn net.Conn) {
 	defer func() {
 		if state.squadRegistered != "" {
 			squadHubInstance.disconnected(state.squadRegistered)
+			// Gone for good (no other connection of theirs): out of their
+			// custom room too, so it does not wait for them (custom_rooms.go).
+			if !squadHubInstance.isOnline(state.squadRegistered) {
+				customRoomDisconnected(state.squadRegistered)
+			}
 		}
 	}()
 	lastActivity := time.Now()

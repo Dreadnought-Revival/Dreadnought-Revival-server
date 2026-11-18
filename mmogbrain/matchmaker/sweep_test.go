@@ -23,7 +23,8 @@ func sweepTestDB(t *testing.T) *sql.DB {
 		`CREATE TABLE matches (id TEXT PRIMARY KEY, game_mode TEXT, map TEXT, server_ip TEXT,
 		 server_port INTEGER, status TEXT, created_at TEXT, started_at TEXT, ended_at TEXT,
 		 instance_id TEXT NOT NULL DEFAULT '', server_ready_at TEXT,
-		 battle_match_id TEXT NOT NULL DEFAULT '', fleet_type INTEGER NOT NULL DEFAULT 1)`,
+		 battle_match_id TEXT NOT NULL DEFAULT '', fleet_type INTEGER NOT NULL DEFAULT 1,
+		 custom INTEGER NOT NULL DEFAULT 0)`,
 		`CREATE TABLE match_slots (match_id TEXT, user_id TEXT, team INTEGER,
 		 joined_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (match_id, user_id))`,
 	} {

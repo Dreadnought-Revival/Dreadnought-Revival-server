@@ -218,6 +218,16 @@ func (h *squadHub) matchFound(playerPID string) {
 	logrus.WithFields(logrus.Fields{"squad": record.id, "members": len(record.members)}).Info("squad: match found")
 }
 
+// armForMatch tells a player's connection to start watching for a match --
+// a custom room match its host has just started (custom_rooms.go). The
+// connection then pushes YA_ServerStarting and YA_Connect as for a queue.
+func (h *squadHub) armForMatch(playerPID string) {
+	pid := squadPID(normalizedPlayerStatePID(playerPID))
+	h.mu.Lock()
+	h.armed[pid] = true
+	h.mu.Unlock()
+}
+
 // takeArm reports whether a member's connection should start (1) or stop (-1)
 // watching for a match, or neither (0).
 func (h *squadHub) takeArm(playerPID string) int {

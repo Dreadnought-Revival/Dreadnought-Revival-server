@@ -1404,6 +1404,11 @@ func TestMmogCustomRoomActionsUseResponseRTs(t *testing.T) {
 		if rt != expectedRT {
 			t.Fatalf("%s RT = %q, want %s", requestName, rt, expectedRT)
 		}
+		// The lobby flow replies (custom_rooms.go) send ROOT "result" as the
+		// int the client reads (EYCustomMatchError), not the generic object.
+		if _, ok := protocol.ExtractInt32Field(payload, "result"); ok {
+			continue // answered by the lobby flow (custom_rooms.go)
+		}
 
 		result := extractNamedMmogObject(t, payload, "result")
 		if !bytes.Contains(result, protocol.AppendInt32Field(nil, "Code", 0)) {

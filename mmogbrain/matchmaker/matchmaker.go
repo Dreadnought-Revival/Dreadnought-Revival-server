@@ -1259,12 +1259,18 @@ func fleetTierURLValue(fleetType int) int {
 // battleMatchID is the control plane's own match id (dn-dedicated's
 // "match_id", passed to the battle server as -MatchID=); battle-server-mod
 // reports results under it. Empty from game-manager, which has none.
-func (m *Matchmaker) requestGameInstance(gameMode, mapName, mapPath string, players []string, fleetTier, teamSize, maxPlayers int) (ip string, port int, instanceID, battleMatchID string, err error) {
+func (m *Matchmaker) requestGameInstance(gameMode, mapName, mapPath string, players []string, fleetTier, teamSize, maxPlayers int, extra ...map[string]interface{}) (ip string, port int, instanceID, battleMatchID string, err error) {
 	spawn := map[string]interface{}{
 		"game_mode": gameMode,
 		"map":       mapName,
 		"map_path":  mapPath,
 		"players":   players,
+	}
+	// Extra spawn fields (custom rooms: team_ai, custom_match_mode).
+	for _, e := range extra {
+		for k, v := range e {
+			spawn[k] = v
+		}
 	}
 	// dn-dedicated turns this into ?FleetTier=<n> on the map URL. game-manager
 	// ignores unknown fields, so its matches stay Recruit.

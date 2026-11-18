@@ -196,3 +196,19 @@ func TestHostTeamSize(t *testing.T) {
 		t.Errorf("TDM set to 3: %d/%d, want 3/6", size, max)
 	}
 }
+
+// A custom room's match takes nobody from the queue: its host chose who plays.
+func TestBackfillSkipsCustomMatches(t *testing.T) {
+	database := pvpTestDB(t)
+	m, _ := pvpMatchmaker(t, database, 10)
+	m.BackfillWindow = 3 * time.Minute
+	m.BackfillModes = map[string]bool{"TDM": true}
+	addRunningMatch(t, m, "room", "TDM", 1, 30*time.Second, true, map[string]int{"host": 1})
+	if _, err := database.Exec(`UPDATE matches SET custom=1 WHERE id='room'`); err != nil {
+		t.Fatal(err)
+	}
+	queuePlayer(t, database, "q1", "stranger", "TDM", time.Now().UTC().Format(time.RFC3339))
+	if placed, err := m.backfill("TDM", 1, 1); err != nil || placed != 0 {
+		t.Fatalf("placed %d (err %v) into a custom match", placed, err)
+	}
+}

@@ -424,6 +424,14 @@ func battleResultHandler(w http.ResponseWriter, r *http.Request) {
 	// Read before recordBattleResult: the store has one connection.
 	boosts, eliteShare := battleBoosts(currentMmogPlayerStateDB(), res, time.Now())
 	rewards = rewards.withBoosts(boosts)
+	// A custom room match (custom_rooms.go) is recorded like any match but
+	// pays nothing: its host picks the bots and the team sizes, so it would
+	// farm. GUESS: the original's rule for custom matches is not known;
+	// operator to confirm.
+	if matchIsCustom(currentMmogPlayerStateDB(), match) {
+		rewards = battleRewards{}
+		logrus.WithField("match", match).Info("battle result: custom match, no rewards")
+	}
 	credits, xp, gains, fresh, err := recordBattleResult(res, rewards)
 	if err != nil {
 		logrus.WithError(err).WithFields(logrus.Fields{"match": match, "player": pid}).Error("battle result: not recorded")
@@ -564,6 +572,22 @@ func recordBattleResult(res battleResult, rewards battleRewards) (credits, xp in
 // or 0 when no match record has that battle-server match id (a match formed
 // before battle_match_id was recorded, or a host started by hand). The mod
 // appends "-r<n>" to the id for a second round on the same host.
+// matchIsCustom reports whether a match (by the battle server's match id,
+// rounds "-r<n>" included) was started by a custom room.
+func matchIsCustom(database *sql.DB, battleMatchID string) bool {
+	if database == nil || battleMatchID == "" {
+		return false
+	}
+	if i := strings.LastIndex(battleMatchID, "-r"); i > 0 {
+		if _, err := strconv.Atoi(battleMatchID[i+2:]); err == nil {
+			battleMatchID = battleMatchID[:i]
+		}
+	}
+	var custom int
+	_ = database.QueryRow(`SELECT custom FROM matches WHERE battle_match_id=? AND battle_match_id!=''`, battleMatchID).Scan(&custom)
+	return custom == 1
+}
+
 func matchFleetType(database *sql.DB, battleMatchID string) int {
 	if i := strings.LastIndex(battleMatchID, "-r"); i > 0 {
 		if _, err := strconv.Atoi(battleMatchID[i+2:]); err == nil {
