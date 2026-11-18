@@ -2604,6 +2604,46 @@ static void LogTargetLists() {
        states[3], n[2]);
 }
 
+// The creep manager's own population cap. AYCreepManager (the global at
+// exe+0x3E04CC0, getter 0x28D620, the one SpawnCreep 0x264BFE asks) is built
+// by its native constructor 0x275BA0 with m_maxCreepsPerTeam +0x3C0 = 8,
+// m_maxCreeps +0x3C8 = 16 (both teams together) and the cull switch +0x3CC = 1
+// (alt limits +0x3D4/+0x3D8 = 15/30 are what SpawnCreep's check 0x27D740 uses
+// while +0x420 is set). Nothing in this exe writes them again, and Onslaught's
+// own numbers (GameInfo_Onslaught_BP smallMax +0xA60 = 12 per team) never
+// reach the manager. Its tick (0x2A2AD0, block 0x2A2BBC-0x2A2CB6) counts the
+// managed ships that are not dead (pawn +0x4E8) and, above +0x3C8, picks the
+// one with the highest float +0x17C (strictly greater, so on a tie the first
+// in its list) and calls 0x28A700 on its controller. That starts a 2 s
+// self-destruct timer (+0x740 0.25 + +0x744 1.75 into +0x734); the
+// controller's tick (0x2A17C0 via 0x2A5DB0) then hands the ship a lethal
+// TakeDamage (0x2A1B97): killer none, plain DamageType, no enemy needed.
+// 12 + 12 fighters are 24 > 16, so eight were culled one per 2 s right after
+// the first wave, and every top-up respawn (the newest ship, so the highest
+// +0x17C, which reads the same 22.025 on all of a wave) was culled again 2 s
+// after it spawned. Smoke 2026-11-18, no players: 24 T1 fighter deaths per
+// minute, T2 none (the first wave is one list, T1 first, equal keys), every one
+// with killer none, ages 2.1/4.1/6.1.. s, then 2.007 s for respawns; live host
+// logs: ~2850 of ~3500 small-creep kill gaps exactly 2 s. The original server
+// must have sized the manager from the game mode; this does the same: the
+// per-team cap is the mode's small-creep maximum, the total is two teams of it.
+// Assault and command ships are not managed (SpawnActor path) and unaffected.
+#define RVA_CREEP_MANAGER 0x28D620
+#define OFF_CM_MAX_PER_TEAM 0x3C0
+#define OFF_CM_MAX_TOTAL 0x3C8
+static void FitCreepManager(int perTeam) {
+  uint8_t *m = (uint8_t *)((tGetSceneManager)(g_base + RVA_CREEP_MANAGER))();
+  if (!m || !IsReadable(m + OFF_CM_MAX_PER_TEAM, 0x10))
+    return;
+  int32_t *pt = (int32_t *)(m + OFF_CM_MAX_PER_TEAM), *tot = (int32_t *)(m + OFF_CM_MAX_TOTAL);
+  if (*pt == perTeam && *tot == 2 * perTeam)
+    return;
+  Logf("onslaught creeps: creep manager %p caps per team %d / total %d -> %d / %d (its own cull would destroy the "
+       "surplus ships)", m, *pt, *tot, perTeam, 2 * perTeam);
+  *pt = perTeam;
+  *tot = 2 * perTeam;
+}
+
 static void OnslaughtCreepTick(uint8_t *gm) {
   __try {
     uint8_t *gs = InvasionGameState(gm);
@@ -2687,6 +2727,7 @@ static void OnslaughtCreepTick(uint8_t *gm) {
       if (maxN[k] <= 0 || maxN[k] > 64) maxN[k] = defMax[k];
       if (every[k] <= 0 || every[k] > 600) every[k] = defEvery[k];
     }
+    FitCreepManager(maxN[0]);
     int alive[2][3];
     CountOnslaughtCreeps(gm, gs, alive);
     static DWORD s_lastCountLog = 0;
