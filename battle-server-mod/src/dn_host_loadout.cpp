@@ -6779,6 +6779,58 @@ static void SendTopPlayerMatchStats(uint8_t *pc, uint8_t *pri, const char *how) 
   }
 }
 
+// Scoreboard census (read-only, logged once per GameState at the first end-of-match
+// transition). The client's YUIScoreboardData::Create (0x4DEC80, log site in its
+// cold chunk 0x4DED17) warns "Number of players outside of expected range: N"
+// when N, the entries in GameState PlayerArray (+0x470) plus the array at
+// +0x508, is more than GameState +0x4F8 + +0x4FC (the players on team 1 and
+// team 2, counted by 0x384F80 from each PlayerState's team byte) or below 1. It
+// only logs: every entry is still added to the scoreboard data before the check.
+// 14+ uploaded client logs show N one above the team sizes, with the host's own
+// local player "256" at index 0. THEORY: that player state has team 0 (the
+// listen host's local player is on no team), so the host's two counters do not
+// include it. This line records the evidence on the host (team byte of every
+// entry by kind, and the counters) so the next client warning can be checked
+// against it. No behaviour is changed.
+static void ScoreboardCensus(uint8_t *pri) {
+  static void *s_lastGs = nullptr;
+  __try {
+    uint8_t *gs = GameStateForPRI(pri);
+    if (!gs || gs == s_lastGs || !IsReadable(gs + OFF_GS_PLAYER_ARRAY, 16) || !IsReadable(gs + 0x4F8, 8))
+      return;
+    uint8_t **arr = *(uint8_t ***)(gs + OFF_GS_PLAYER_ARRAY);
+    int count = *(int32_t *)(gs + OFF_GS_PLAYER_ARRAY + 8);
+    if (count <= 0 || count > 256 || !IsReadable(arr, (size_t)count * 8))
+      return;
+    s_lastGs = gs;
+    // by kind: human (controller with a connection), local (a player controller
+    // with none: the host's own), bot (anything else); team bytes 0/1/2/other.
+    int kind[3][4] = {};
+    int unreadable = 0;
+    for (int i = 0; i < count; ++i) {
+      uint8_t *p = arr[i];
+      if (!IsReadable(p, OFF_PRI_TEAM + 1) || !IsReadable(p + OFF_ACTOR_OWNER, 8)) {
+        ++unreadable;
+        continue;
+      }
+      uint8_t *c = *(uint8_t **)(p + OFF_ACTOR_OWNER);
+      int k = 2;
+      if (IsReadable(c, OFF_PC_NETCONNECTION + 8) && ClassChainContains((UObjectMin *)c, "PlayerController"))
+        k = *(void **)(c + OFF_PC_NETCONNECTION) ? 0 : 1;
+      int t = p[OFF_PRI_TEAM];
+      ++kind[k][t > 2 ? 3 : t];
+    }
+    int t1 = *(int32_t *)(gs + 0x4F8), t2 = *(int32_t *)(gs + 0x4FC);
+    Logf("scoreboard census: PlayerArray %d entries (%d unreadable); GameState team counters %d + %d = %d; "
+         "by team byte [none/1/2/other]: humans %d/%d/%d/%d, local players %d/%d/%d/%d, bots/other %d/%d/%d/%d; "
+         "the client warns 'outside of expected range' when entries > counters",
+         count, unreadable, t1, t2, t1 + t2, kind[0][0], kind[0][1], kind[0][2], kind[0][3], kind[1][0],
+         kind[1][1], kind[1][2], kind[1][3], kind[2][0], kind[2][1], kind[2][2], kind[2][3]);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("scoreboard census: EXCEPTION");
+  }
+}
+
 // The deferred half: the game's own transition, then the stats RPC.
 static void SendEomTransition(void *orbitComp, uint8_t *pc, uint8_t *pri, const char *how) {
   bool ok = false;
@@ -6794,6 +6846,7 @@ static void SendEomTransition(void *orbitComp, uint8_t *pc, uint8_t *pri, const 
   }
   g_origClientStartEomTransition(orbitComp);
   Logf("eom transition: ClientStartEndOfMatchTransition sent to controller %p (%s)", pc, how);
+  ScoreboardCensus(pri);
   SendTopPlayerMatchStats(pc, pri, how);
 }
 
