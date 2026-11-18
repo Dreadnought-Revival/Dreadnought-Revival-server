@@ -5663,6 +5663,8 @@ struct PlayerSeen {
   void *pc;
   bool named;
   int lastTeamFix;
+  int lastTeamCheck;  // pawn*100 + controller*10 + player state team of the last logged mismatch
+  int teamCheckLines; // "team check" lines logged for this controller (capped)
   char fleet[33];   // the match fleet's id (/battle/player fleet=), "" = none
   DWORD fleetSince; // GetTickCount() when it was learned
   int fleetSends;   // ClientSetActiveFleetId sends so far
@@ -5681,6 +5683,8 @@ static PlayerSeen *SeenFor(void *pc) {
     freeSlot->pc = pc;
     freeSlot->named = false;
     freeSlot->lastTeamFix = -1;
+    freeSlot->lastTeamCheck = -1;
+    freeSlot->teamCheckLines = 0;
     freeSlot->fleet[0] = 0;
     freeSlot->fleetSince = 0;
     freeSlot->fleetSends = 0;
@@ -5879,6 +5883,85 @@ static void FixTeam(uint8_t *pc, uint8_t *pri, PlayerSeen *seen) {
     Logf("team sync: controller %p TEAM=%d -- player state %d -> %d, controller %d -> %d",
          pc, want, priTeam, want, pcTeam, want);
   seen->lastTeamFix = want;
+}
+
+// Native team assignment at login (2026-11-18).
+//
+// The host's own game mode InitNewPlayer (0x373520, .pdata 0x373520-0x373573
+// plus its continuation; vtable slot 0x850 of every multiplayer game mode)
+// parses the join URL's options TEAM (ANSI "TEAM" at 0x2E87424), CLASS and
+// LOADOUT, then calls vtable +0x9C0 = SetTeamFromName
+// (0x381270, .pdata 0x381270-0x38152A, 698 bytes, no direct callers; same
+// slot in the TDM/TER/... vtables 0x2E95618, 0x2E99D88, 0x2E9B108, 0x2E9D2D0,
+// 0x2E9FBE8, 0x2EA06D8, 0x305C288; the vtable 0x2E987E0 overrides it with
+// 0x381530, which always picks team 1) as (gameMode, playerController,
+// FString *teamOption): rcx = game mode, rdx = controller, r8 = FString
+// {data, int num incl. terminator at +8}. It compares the string,
+// case-insensitively, with "TEAM1" / "TEAM2" / "TEAM3" and calls
+// AYPlayerController::SetTeam (0x5961F0: PC +0xC30, then the player state).
+// Our YA_Connect sends the bare number, the client formats it verbatim into
+// "TRAVEL <Connect>?TEAM=<Team>", and "2" is none of those strings, so the
+// game never assigned a team natively and every human sat on the controller
+// default (team 1) until FixTeam (above, 1 Hz) wrote the right one -- up to a
+// second after the login, long enough for a pawn to be possessed and the
+// client's Territory HUD to cache the wrong local team (+0x390 at SetYPawn).
+//
+// This gives the game the string it expects before any pawn exists. The
+// original is called with "TEAMn" for "1"/"2"/"3" and with the untouched
+// string for anything else; the client and mmogbrain are not touched, and
+// FixTeam stays as the backstop. Hooks the body (an ordinary method, not an
+// exec thunk), so no FFrame is involved.
+// NOT verified live: needs a real join (the headless smoke has no players).
+#define RVA_GM_SET_TEAM_FROM_NAME 0x381270
+typedef void(__fastcall *tSetTeamFromName)(void *gm, void *pc, FStringMin *name);
+static tSetTeamFromName g_origSetTeamFromName = nullptr;
+
+static void __fastcall HookSetTeamFromName(void *gm, void *pc, FStringMin *name) {
+  wchar_t buf[8] = {};
+  FStringMin alt = {};
+  FStringMin *use = name;
+  int want = 0;
+  char other[16] = {};
+  __try {
+    if (name && name->data && name->num >= 2 && IsReadable(name->data, sizeof(wchar_t) * (name->num < 16 ? name->num : 16))) {
+      if (name->num == 2 && name->data[1] == 0 && name->data[0] >= L'1' && name->data[0] <= L'3') {
+        want = name->data[0] - L'0';
+        buf[0] = L'T'; buf[1] = L'E'; buf[2] = L'A'; buf[3] = L'M';
+        buf[4] = (wchar_t)(L'0' + want);
+        alt.data = buf;
+        alt.num = alt.max = 6; // "TEAMn" + terminator
+        use = &alt;
+      } else {
+        // Not a bare number: the game's own compare decides. Keep a short
+        // printable copy for the log (a few lines at most, below).
+        int n = 0;
+        for (; n < 15 && n < name->num - 1; ++n)
+          other[n] = (name->data[n] >= 32 && name->data[n] < 127) ? (char)name->data[n] : '?';
+      }
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    use = name;
+    want = 0;
+  }
+  g_origSetTeamFromName(gm, pc, use);
+  __try {
+    uint8_t *c = (uint8_t *)pc;
+    uint8_t *pri = (c && IsReadable(c + OFF_PC_PLAYER_STATE, 8)) ? *(uint8_t **)(c + OFF_PC_PLAYER_STATE) : nullptr;
+    int pcTeam = (c && IsReadable(c + OFF_PC_TEAM, 1)) ? c[OFF_PC_TEAM] : -1;
+    int priTeam = pri && IsReadable(pri + OFF_PRI_TEAM, 1) ? pri[OFF_PRI_TEAM] : -1;
+    if (want) {
+      Logf("team option: controller %p joined with TEAM=%d -> \"TEAM%d\"; controller team now %d, player state %d",
+           pc, want, want, pcTeam, priTeam);
+    } else if (other[0]) {
+      static int s_otherLines = 0; // a client cannot flood the log through its URL
+      if (s_otherLines < 8) {
+        ++s_otherLines;
+        Logf("team option: controller %p joined with TEAM=%s -> passed through unchanged; controller team now %d, player state %d",
+             pc, other, pcTeam, priTeam);
+      }
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
 }
 
 // ?DNTeamSize=<n> from the host's command line (dn-dedicated adds it for a
@@ -6107,6 +6190,25 @@ static void PlayersTick(uint8_t *gm) {
       if (!seen)
         continue;
       FixTeam(pc, pri, seen);
+      // Diagnostic (2026-11-18, for the Conquest minimap friend/enemy report):
+      // a human's ship team (pawn +0x8C0, replicated; the client colours its
+      // minimap markers from it and caches the local team from it at
+      // SetYPawn) must equal the controller's (+0xC30) and the player
+      // state's (+0x940). One line per distinct combination, at most 8 per
+      // controller; a recovery re-arms it.
+      if (IsReadable(pc + OFF_CONTROLLER_PAWN, 8)) {
+        uint8_t *pawn = *(uint8_t **)(pc + OFF_CONTROLLER_PAWN);
+        if (pawn && IsReadable(pawn + OFF_SHIP_TEAM, 1) && IsReadable(pc + OFF_PC_TEAM, 1)) {
+          int st = pawn[OFF_SHIP_TEAM], pt = pc[OFF_PC_TEAM], rt = pri[OFF_PRI_TEAM];
+          if (st == pt && st == rt) {
+            seen->lastTeamCheck = -1;
+          } else if (seen->lastTeamCheck != st * 100 + pt * 10 + rt && seen->teamCheckLines < 8) {
+            seen->lastTeamCheck = st * 100 + pt * 10 + rt;
+            ++seen->teamCheckLines;
+            Logf("team check: %p ship team %d controller %d player state %d DIFFER", pc, st, pt, rt);
+          }
+        }
+      }
       int t = pri[OFF_PRI_TEAM];
       if (t == 1 || t == 2)
         ++humansOnTeam[t];
@@ -11814,6 +11916,9 @@ static DWORD WINAPI Startup(LPVOID) {
                       RVA_CP_ON_CAPTURED, (void *)&HookCpOnCaptured, (void **)&g_origCpOnCaptured);
   InstallSwitchedHook("conquest / te spawns (YGameMode player-start chooser)", RVA_GM_CHOOSE_PLAYER_START,
                       (void *)&HookChoosePlayerStart, (void **)&g_origChoosePlayerStart);
+  InstallSwitchedHook("team option (YGameMode_Multiplayer SetTeamFromName: \"1\"/\"2\"/\"3\" -> \"TEAMn\")",
+                      RVA_GM_SET_TEAM_FROM_NAME, (void *)&HookSetTeamFromName,
+                      (void **)&g_origSetTeamFromName);
   if (!TeSpawnsEnabled())
     Logf("te spawns: OFF (dn_host_no_te_spawns.txt / DN_HOST_NO_TE_SPAWNS=1)");
 
