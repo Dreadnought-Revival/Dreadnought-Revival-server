@@ -2387,6 +2387,19 @@ const playerRankCount = 51
 // EYCreditsPoolType::RankUp) is 0: no value exists and none was chosen.
 // SR/FR/PU/SU/FU stay absent: no class/faction ladders and no rank-gated
 // unlocks, the same as before.
+//
+// What the entries do NOT control (investigated 2026-11-18, client logs full of
+// "DoesPackageExist FAILED: .../ui_captain_rank_line captain ii"): each PR entry
+// is parsed as {index, RP, CR} and the client names a rank by DN_Ranks_Player row
+// FromInt(index), so the 51 entries give 51 names ("Fledgling" .. "Anax of the
+// Belt"). The failing path is NOT sent by us. The team overview's AS
+// (YPlayerOverview.SetPlayerData -> UpdateRankIcon(m_captainRank, m_backerRankIcon))
+// builds "UI_captain_rank_"+m_captainRank and "UI_backer_rank_"+m_backerRankIcon,
+// but the client's own C++ (0x1404CAB20, YSpectatorData list) fills m_captainRank
+// with the rank NAME text and m_backerRankIcon with the captain icon's full asset
+// path. The strings come from the client's rank table and the rank index; no server
+// field feeds them, and the YA_Tune channel does not cover that table. Sending
+// different PR data cannot fix it. UI_captain_rank_0..50 all exist.
 func buildMmogProgressionDataPayload() []byte {
 	var b []byte
 	var stack []int
