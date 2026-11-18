@@ -5794,6 +5794,32 @@ static int HostTeamSizeOverride() {
   return s_size;
 }
 
+// ?DNTeamAI=<t1><t2> (2026-11-18): a custom room's "Fill With AI" per team,
+// passed by dn-dedicated ("10" = team 1 gets bots, team 2 none). A side whose
+// digit is 0 is kept at no bots by the balance below (with DNTeamSize, which
+// custom rooms always send). Absent or malformed: both sides get bots, as
+// before. Returns whether team (1 or 2) may have bots.
+static bool HostTeamAI(int team) {
+  static int s_ai[2] = {-1, -1};
+  if (s_ai[0] < 0) {
+    s_ai[0] = s_ai[1] = 1;
+    const wchar_t *cmd = GetCommandLineW();
+    const wchar_t *p = cmd ? wcsstr(cmd, L"DNTeamAI=") : nullptr;
+    if (p) {
+      wchar_t a = p[9], b = a ? p[10] : 0;
+      if ((a == L'0' || a == L'1') && (b == L'0' || b == L'1')) {
+        s_ai[0] = a == L'1';
+        s_ai[1] = b == L'1';
+        Logf("team ai: DNTeamAI on the command line -> team 1 bots %s, team 2 bots %s",
+             s_ai[0] ? "yes" : "no", s_ai[1] ? "yes" : "no");
+      } else {
+        Logf("team ai: DNTeamAI on the command line is not two 0/1 digits; ignored (bots on both sides)");
+      }
+    }
+  }
+  return team == 1 ? s_ai[0] != 0 : team == 2 ? s_ai[1] != 0 : true;
+}
+
 // Bot census (2026-11-07): how many bots each side CAN have and has. The
 // team fill (0x381FA0, verified in the exe) walks the mode's bot list
 // (gm+0x968, count gm+0x970, 0x38 bytes an entry, team byte at +8) and lets
@@ -6019,7 +6045,7 @@ static void PlayersTick(uint8_t *gm) {
         if (target > 0)
           s_botsSetUp = gm;
         int want = size - humansOnTeam[team];
-        if (want < 0)
+        if (want < 0 || !HostTeamAI(team)) // a custom room side without AI fill
           want = 0;
         // Bots set up (0x3678F0 ran; before that a call would fill early).
         // The old rule reads that from target > 0, which a full side loses.

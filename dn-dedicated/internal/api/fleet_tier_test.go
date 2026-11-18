@@ -41,3 +41,16 @@ func TestHostURLOptionsTeamSize(t *testing.T) {
 		}
 	}
 }
+
+// A custom room's AI fill per team reaches the host as DNTeamAI; nothing
+// else passes.
+func TestTeamAIURLOption(t *testing.T) {
+	if got, err := teamAIURLOption("10"); err != nil || got != "DNTeamAI=10" {
+		t.Fatalf("10: %q %v", got, err)
+	}
+	for _, bad := range []string{"1", "102", "a0", "1?", " 1"} {
+		if _, err := teamAIURLOption(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}

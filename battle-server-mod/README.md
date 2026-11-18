@@ -1937,6 +1937,15 @@ Without `DNTeamSize` nothing changes: the host's size, and bots trimmed only
 on sides with humans. Log lines: `team size: DNTeamSize=<n> on the command
 line`, `team size: host <old> -> <n> per side`, `bot balance: ...`.
 
+**Custom rooms: bots per team (`?DNTeamAI=<t1><t2>`, added 2026-11-18).** A
+custom room's "Team 1/2 Fill With AI" goes to the host as two digits ("10" =
+team 1 filled with bots, team 2 not), always with `DNTeamSize` (the room's
+team size). A side whose digit is 0 is kept at 0 bots by the same
+once-a-second balance (`SetTeamSizeAI` trims the bots the game's own fill
+spawned). Absent or malformed: both sides get bots, as before. Log line:
+`team ai: DNTeamAI on the command line -> team 1 bots yes|no, team 2 bots
+yes|no`; then `bot balance: ... team <n> bots <x> -> 0`. Not verified live.
+
 The per-player arrays (DNPIDs, ships flown, team/name sync, fair-play checks,
 end-of-match transitions) hold 128 players.
 

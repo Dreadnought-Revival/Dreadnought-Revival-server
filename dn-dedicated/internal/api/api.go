@@ -120,6 +120,10 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
 		// with it, MaxPlayers also becomes ?MaxPlayers=<n>, the engine's
 		// session limit (AGameSession::InitOptions), so the humans fit.
 		TeamSize int `json:"team_size"`
+		// TeamAI becomes ?DNTeamAI=<t1><t2> ("10": team 1 filled with bots,
+		// team 2 not): a custom room's "Fill With AI" per team. Only two
+		// characters 0/1 pass; absent: bots as the team size says.
+		TeamAI string `json:"team_ai"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -168,6 +172,12 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	urlOptions, err := hostURLOptions(req.FleetTier, req.TeamSize, req.MaxPlayers)
+	if err == nil && req.TeamAI != "" {
+		var opt string
+		if opt, err = teamAIURLOption(req.TeamAI); err == nil {
+			urlOptions = append(urlOptions, opt)
+		}
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -246,6 +256,15 @@ func hostURLOptions(fleetTier, teamSize, maxPlayers int) ([]string, error) {
 		}
 	}
 	return opts, nil
+}
+
+// teamAIURLOption is a request's team_ai as the map-URL option DNTeamAI:
+// exactly two characters, each 0 or 1.
+func teamAIURLOption(teamAI string) (string, error) {
+	if len(teamAI) != 2 || strings.Trim(teamAI, "01") != "" {
+		return "", fmt.Errorf("team_ai must be two characters 0 or 1, e.g. \"10\"")
+	}
+	return "DNTeamAI=" + teamAI, nil
 }
 
 // fleetTierURLOptions turns a request's fleet_tier into map-URL options. Only
