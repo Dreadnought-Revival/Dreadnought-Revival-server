@@ -485,7 +485,10 @@ func TestPlayersInformationPayloadUsesDisplayInfoShape(t *testing.T) {
 	if !bytes.Contains(infos, protocol.AppendStringField(nil, "DisplayInfo", defaultCaptainDisplayInfo)) {
 		t.Fatal("YA_GetPlayersInformation missing DisplayInfo")
 	}
-	if !bytes.Contains(infos, protocol.AppendStringField(nil, "Rank", "1")) {
+	// A fresh account (current_rank 1, 100 XP) is the client's rank position 0:
+	// Rank is the 0-based ladder position the client uses as the icon number,
+	// not the server's 1-based current_rank (see clientRankPosition).
+	if !bytes.Contains(infos, protocol.AppendStringField(nil, "Rank", "0")) {
 		t.Fatal("YA_GetPlayersInformation missing Rank")
 	}
 	if !bytes.Contains(infos, protocol.AppendStringField(nil, "UnlockedFleetType", "1")) {

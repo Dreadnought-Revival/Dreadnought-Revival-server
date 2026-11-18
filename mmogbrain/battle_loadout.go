@@ -260,10 +260,6 @@ func battlePlayerHandler(w http.ResponseWriter, r *http.Request) {
 	// (match_fleet.go) -- ours has no fleet data, so each client fielded
 	// whatever fleet was selected in its hangar. Added 2026-11-11.
 	fleet, haveFleet := battleMatchFleetFID(pid, strings.TrimSpace(r.URL.Query().Get("match")))
-	if name == "" && !haveFleet {
-		http.Error(w, "no name for this player", http.StatusNotFound)
-		return
-	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	if name != "" {
 		_, _ = fmt.Fprintf(w, "name=%s\n", name)
@@ -280,4 +276,28 @@ func battlePlayerHandler(w http.ResponseWriter, r *http.Request) {
 	if captain := strings.TrimSpace(state.displayInfo); captain != "" && !strings.ContainsAny(captain, "\r\n") {
 		_, _ = fmt.Fprintf(w, "captain=%s\n", captain)
 	}
+	// rep= is the player's reputation for the host to write into the player
+	// state's reputation manager (UYReputationManager m_initialReputation,
+	// PRI+0x938 -> +0x108, replicated). Every client rebuilds that manager for
+	// EVERY player from its OWN reputation (FUN_1403FE2F0 -> 0x1404055B0 reads
+	// the local YA_PlayerGet "rep") and keeps it when the host sends nothing,
+	// which a host that never sets it (0 = the class default, not replicated)
+	// does for everybody: each in-match rank list -- scoreboard icons, the
+	// end-of-match scoreboard and team labels -- then shows the viewer's own
+	// rank for every player. The value is "rep" exactly as YA_PlayerGet sends it
+	// (current_xp), so the client's ladder gives the rank the player sees in the
+	// hangar. The client's rank for 0 is rank 0 and so is the rank for 1
+	// (ladder entry 1 starts at 1000), but 0 is never replicated, so a
+	// reputation of 0 is sent as 1 (battleHostReputation).
+	_, _ = fmt.Fprintf(w, "rep=%d\n", battleHostReputation(state.currentXP))
+}
+
+// battleHostReputation is the reputation the host writes for a player. See the
+// rep= line of battlePlayerHandler: a replicated int equal to its class default
+// (0) is never sent, so 0 becomes 1; both are rank 0 on the client's ladder.
+func battleHostReputation(currentXP int32) int32 {
+	if currentXP < 1 {
+		return 1
+	}
+	return currentXP
 }

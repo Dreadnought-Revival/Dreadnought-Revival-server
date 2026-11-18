@@ -57,7 +57,9 @@ func TestBattlePlayerNameLookup(t *testing.T) {
 	battlePlayerHandler(rec, req)
 	// captain=: the host copies it into the player state's
 	// m_captainDisplayInformation (otherwise every captain draws as default).
-	if want := "name=Tester\ncaptain=" + defaultCaptainDisplayInfo + "\n"; rec.Code != http.StatusOK || rec.Body.String() != want {
+	// rep=: current_xp (a fresh account has 100), written into the player state's
+	// reputation manager so every client shows this player's rank, not its own.
+	if want := "name=Tester\ncaptain=" + defaultCaptainDisplayInfo + "\nrep=100\n"; rec.Code != http.StatusOK || rec.Body.String() != want {
 		t.Fatalf("got %d %q", rec.Code, rec.Body.String())
 	}
 	req = httptest.NewRequest(http.MethodGet, "/battle/player?pid="+pid, nil)

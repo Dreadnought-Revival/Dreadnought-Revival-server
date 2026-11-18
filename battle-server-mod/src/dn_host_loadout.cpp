@@ -5805,6 +5805,50 @@ static void RememberMatchFleet(uint8_t *pc, PlayerSeen *seen, const char *pid, c
   Logf("fleet: controller %p (pid %s) fields fleet %s in this match", pc, pid, v);
 }
 
+// Player reputation (rank icons). AYPlayerReplicationInfo +0x938 is the
+// UYReputationManager (0x1405B5860 reads it: base int at +0x108, eight pool
+// ints through the TArray at +0x110/+0x118). +0x108 is m_initialReputation,
+// replicated with RepNotify (OnRep_Reputation). Every machine builds the
+// manager for every player in UYReputationManager's init (0x3FE2F0 ->
+// 0x4055B0): off a login-less host it takes the machine's OWN mmog reputation
+// (YA_PlayerGet "rep", mmog+0x3914), and a host that never writes the field
+// leaves it at the class default 0, which is not replicated. So on every client
+// every in-match rank came out as the viewer's own (verified in 32 uploaded
+// client logs: exactly one rank per log in the scoreboard-icon failures). The
+// rank lists read it through the client's ladder: the HUD teammate list
+// (0x4CAB20), the scoreboard (YUIScoreBoardData::Create 0x4DF810), the
+// end-of-match scoreboard and captain labels (0x44ABB0, 0x4DF480) and the
+// loadout tooltip (0x436390). mmogbrain sends rep= in /battle/player (the
+// player's reputation, never 0); this writes it. NOT verified live: that the
+// value replicates and the clients' OnRep keeps it (theory from the client's
+// own init code).
+#define OFF_PRI_REPUTATION_MANAGER 0x938
+#define OFF_REPMGR_INITIAL_REPUTATION 0x108
+static void SetPlayerReputation(uint8_t *pc, const char *pid, const char *body) {
+  char v[32];
+  if (!FieldValue(body, "rep", v, sizeof(v)) || !v[0])
+    return; // an older mmogbrain: leave the clients' own value alone
+  long rep = strtol(v, nullptr, 10);
+  if (rep < 1)
+    return;
+  __try {
+    uint8_t *pri = IsReadable(pc + OFF_PC_PLAYER_STATE, 8) ? *(uint8_t **)(pc + OFF_PC_PLAYER_STATE) : nullptr;
+    uint8_t *mgr = pri && IsReadable(pri + OFF_PRI_REPUTATION_MANAGER, 8)
+                       ? *(uint8_t **)(pri + OFF_PRI_REPUTATION_MANAGER) : nullptr;
+    if (!mgr || !IsReadable(mgr, OFF_REPMGR_INITIAL_REPUTATION + 4)) {
+      Logf("reputation: controller %p (pid %s) has no player state / reputation manager yet (%p / %p)",
+           pc, pid, pri, mgr);
+      return;
+    }
+    int before = *(int32_t *)(mgr + OFF_REPMGR_INITIAL_REPUTATION);
+    *(int32_t *)(mgr + OFF_REPMGR_INITIAL_REPUTATION) = (int32_t)rep;
+    Logf("reputation: controller %p (pid %s) player state %p manager %p +0x%x %d -> %ld",
+         pc, pid, pri, mgr, OFF_REPMGR_INITIAL_REPUTATION, before, rep);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    Logf("reputation: controller %p (pid %s) -- exception writing the reputation", pc, pid);
+  }
+}
+
 static void NamePlayer(uint8_t *gm, uint8_t *pc, PlayerSeen *seen) {
   seen->named = true; // one attempt per player, logged either way
   static wchar_t name[64];
@@ -5822,6 +5866,7 @@ static void NamePlayer(uint8_t *gm, uint8_t *pc, PlayerSeen *seen) {
       if (FieldValue(body, "name", v, sizeof(v)) && v[0])
         MultiByteToWideChar(CP_UTF8, 0, v, -1, name, 32);
       SetCaptainDisplayInfo(pc, body);
+      SetPlayerReputation(pc, pid, body);
       RememberMatchFleet(pc, seen, pid, body);
     } else {
       Logf("fleet: no /battle/player answer for controller %p (pid %s, HTTP %d); "

@@ -2361,6 +2361,51 @@ func appendMmogShipProgression(b []byte, stack []int, ship mmogShipSeed) ([]byte
 // icons (UI_captain_rank_0..50).
 const playerRankCount = 51
 
+// playerRankLadder is the PR ladder sent in YA_GetProgressionData: entry i is
+// the cumulative reputation at which client rank position i starts (entry 0 =
+// 0). It is the one list both the PR payload and clientRankPosition use, so the
+// rank the server tells other players about is the rank the client computes
+// for the same reputation.
+func playerRankLadder() []int32 {
+	ladder := make([]int32, 0, playerRankCount)
+	cumulative := int32(0)
+	for rank := int32(1); rank <= playerRankCount; rank++ {
+		cumulative += handlers.RankXPThreshold(rank) // 0 for rank 1
+		ladder = append(ladder, cumulative)
+	}
+	return ladder
+}
+
+// clientRankPosition is the client's rank number for a reputation: the index
+// of the last ladder entry whose RP is <= rep, exactly FUN_1403FB620
+// (0x3FB620-0x3FB689: entries are {index, RP, CR}, last entry when rep >= its
+// RP, 0 when rep is 0 or below the second entry). This number is what the
+// client uses as the rank everywhere it is not computing it from its own
+// reputation: YA_GetPlayersInformation "Rank" is stored as-is (infos entry
+// +0x18) and the social/squad data builder (0x4276D0, call at 0x427E3A) feeds
+// it straight to the icon path builder 0x41DB90 ("UI_captain_rank_<n>", icons
+// 0..50 only) and to the ladder for the rank name (0x3FB780). So it must be
+// this 0-based position, NOT the server's 1-based current_rank (off by one,
+// and past 50 for ranks 52+, which have no icon and no name).
+func clientRankPosition(rep int32) int32 {
+	ladder := playerRankLadder()
+	if len(ladder) == 0 {
+		return 0
+	}
+	if rep >= ladder[len(ladder)-1] {
+		return int32(len(ladder) - 1)
+	}
+	if rep == 0 {
+		return 0
+	}
+	for i := 1; i < len(ladder); i++ {
+		if rep < ladder[i] {
+			return int32(i - 1)
+		}
+	}
+	return 0
+}
+
 // buildMmogProgressionDataPayload answers YA_GetProgressionData, the reply the
 // client's rank system is built from.
 //
@@ -2406,13 +2451,11 @@ func buildMmogProgressionDataPayload() []byte {
 
 	b = protocol.AppendStringField(b, "RT", "YA_GetProgressionData")
 	b, stack = protocol.AppendArrayStart(b, stack, "PR")
-	cumulative := int32(0)
-	for rank := int32(1); rank <= playerRankCount; rank++ {
-		cumulative += handlers.RankXPThreshold(rank) // 0 for rank 1
+	for _, rp := range playerRankLadder() {
 		b, stack = protocol.AppendUnnamedObjectStart(b, stack)
 		// Numeric strings: the parser reads RP/CR through the scalar union
 		// (type 2-4 switch at 0x142A73ADF).
-		b = protocol.AppendStringField(b, "RP", strconv.Itoa(int(cumulative)))
+		b = protocol.AppendStringField(b, "RP", strconv.Itoa(int(rp)))
 		b = protocol.AppendStringField(b, "CR", "0")
 		b, stack = protocol.AppendObjectEnd(b, stack)
 	}
@@ -6368,7 +6411,12 @@ func appendMmogPlayerDisplayInfoEntry(b []byte, stack []int, playerPID string, s
 	b = protocol.AppendStringField(b, "DisplayInfo", state.displayInfo)
 	// Same restrictive tagged-union bug class documented elsewhere in this
 	// file — send numeric strings, not int32.
-	b = protocol.AppendStringField(b, "Rank", strconv.Itoa(int(state.currentRank)))
+	// Rank is the client's rank POSITION for this player's reputation (the same
+	// number the player's own hangar computes from "rep"), not current_rank:
+	// the client uses it unchanged as the icon number and ladder index, so
+	// current_rank (1-based, up to 233 here) showed every squad member one rank
+	// too high and rank 52+ with no icon and no name. See clientRankPosition.
+	b = protocol.AppendStringField(b, "Rank", strconv.Itoa(int(clientRankPosition(state.currentXP))))
 	b = protocol.AppendStringField(b, "UnlockedFleetType", strconv.Itoa(1))
 	b = protocol.AppendBoolField(b, "Elite", false)
 	b, stack = protocol.AppendObjectEnd(b, stack)
