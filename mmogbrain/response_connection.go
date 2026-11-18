@@ -654,14 +654,20 @@ func processMmogAppFrames(log *logrus.Logger, conn net.Conn, remote string, fram
 				log.WithFields(logrus.Fields{"remote": remote, "pid": state.playerPID}).Info("mmog: withholding YA_GetDailyContractsData response (DN_ANSWER_DAILY_CONTRACTS=0)")
 				continue
 			}
-			// Answer it only once player data exists client-side, through the
-			// queue flushed after YA_PlayerGet -- the ordering YA_PlayerFleets
-			// was proven to need. Not proven necessary here; it costs nothing.
-			if requestName == "YA_GetDailyContractsData" && !state.playerGetResponded {
-				state.pendingDailyContracts = append(state.pendingDailyContracts, frame)
-				log.WithFields(logrus.Fields{"remote": remote, "pid": state.playerPID}).Info("mmog: deferring YA_GetDailyContractsData until YA_PlayerGet")
-				continue
-			}
+			// Answered as it arrives, in the client's own order. REMOVED
+			// 2026-11-18: this was held until after YA_PlayerGet ("not proven
+			// necessary here; it costs nothing"). It did cost: the client asks
+			// for it inside its YA_UserLogin success handler (0x2A3AF90 ->
+			// 0x2A33A90 -> 0x2A33640), before YA_PlayerGet. The ContractTable
+			// reply fills the quest collection (0x2A25788 -> parse 0x2A6B7F0 ->
+			// mmog+0x1070 -> quest cycle 0x3FE800), and the YA_PlayerGet reply
+			// ends by firing mmog+0xEB0 (0x2A256E6), which the contracts manager
+			// binds (0x308120) to its list build 0x306700. Deferred, the list
+			// was built from an empty collection at hangar entry: every slot on
+			// cooldown until a match (player reports 2026-11-17). THEORY until a
+			// login shows contracts without a match. The July hangar-entry
+			// recursion this ordering once guarded against was the EMPTY
+			// ContractTable (fixed 2026-09-25, see above).
 			// Defer the fleet response until player data exists client-side.
 			// Live Wine-client testing (2026-07-27) showed the client rejects a
 			// byte-perfect, non-empty Fleets array with "Invalid fleet data,

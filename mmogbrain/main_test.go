@@ -2705,12 +2705,13 @@ func TestObserverOnlyBootstrapResponsePolicy(t *testing.T) {
 		wantFrames  int
 		wantDelayed bool
 	}{
-		// YA_GetDailyContractsData is answered, but only after YA_PlayerGet
-		// (the pending queue). It used to be withheld outright on the belief
-		// that any answer arms the hangar-entry recursion; 2026-09-25 traced
-		// that recursion to our reply lacking a ContractTable
-		// (mpquest_contracts.go).
-		{requestName: "YA_GetDailyContractsData", wantFrames: 0, wantDelayed: true},
+		// YA_GetDailyContractsData is answered as it arrives, before
+		// YA_PlayerGet, in the client's own order (2026-11-18: deferred, the
+		// contracts list was built from an empty quest collection at hangar
+		// entry). It used to be withheld outright on the belief that any
+		// answer arms the hangar-entry recursion; 2026-09-25 traced that
+		// recursion to our reply lacking a ContractTable (mpquest_contracts.go).
+		{requestName: "YA_GetDailyContractsData", wantFrames: 1},
 		{requestName: "YA_GetSeasonProgress", wantFrames: 1},
 	} {
 		requestName := tc.requestName
