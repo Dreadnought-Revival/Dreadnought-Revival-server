@@ -65,7 +65,13 @@ var targetSizes = map[string]int{
 	// 43600 -> 44179 (+579): the Ceres Awakens tech-cache row PODTDMPickup
 	// (laterScoringRows), which the 1.11/1.12 datamine predates; the pod BP
 	// fires the event and the host had no row to pay it from.
-	"YA_GetScoringData": 44179,
+	// 44179 -> 44303 (+124): PlayTime's and BERSERKER's EventCredits grew from
+	// "TER(n)" to "TDM(0) : TE(0) : IVN(0) : POD_TDM(0) : BC(0) : TER(n) :
+	// TURBO_TDM(0)" (62 bytes each; the BERSERKER row is also in the host's
+	// copy). The client's ParseRewardForEvent logged an error per mode and
+	// dropped the rest of the row when a non-empty value named no value for
+	// the mode; the explicit 0 is what 1.11.1's empty field meant.
+	"YA_GetScoringData": 44303,
 	// Was 227. +4278 for the quest catalog (ContractTable: the client's 24
 	// MPQuestCollection rows, ContractConfigTable, ContractNextResetTime) --
 	// the fields the client's parser for this reply (0x2A6B7F0) actually reads.

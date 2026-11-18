@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -196,5 +197,79 @@ func TestPodPickupRowIsServedForCeresAwakens(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("%d PODTDMPickup rows, want 1", n)
+	}
+}
+
+// ParseRewardForEvent (0x429E20) runs for every row whose GameModes names the
+// current mode, over the six value fields (score, XP, credits, ribbon score,
+// XP, credits). A field is skipped when empty and read when it is a plain
+// number (IsNumeric, 0x140BD6F10); otherwise the value parser (0x42DF40) needs
+// a "<MODE>(n)" segment for the mode, and when it has none the client logs
+//
+//	"The event X doesn't have a reward set up for m_eventCredits for TDM game mode."
+//
+// and STOPS, so the fields after the failing one are never read. PlayTime and
+// BERSERKER (RecentIncomingRawDamageXCloseEnemies) tripped it: their
+// EventCredits was just "TER(n)" (the generator merged 1.12.0's Conquest value
+// into 1.11.1's empty field), so every other mode logged an error per row on
+// every client and host. The empty field meant 0, which is now spelled out.
+func TestEveryScoringValueNamesEveryRowMode(t *testing.T) {
+	rows := originalScoringTable()
+	if len(rows) < 50 {
+		t.Fatalf("%d original rows; data/scoring/ScoringTable.json missing?", len(rows))
+	}
+	for _, r := range rows {
+		modes := strings.Split(strings.ReplaceAll(r.GameModes, " ", ""), ":")
+		for field, v := range map[string]string{
+			"EventScore": r.EventScore, "EventXP": r.EventXP, "EventCredits": r.EventCredits,
+			"RibbonScore": r.RibbonScore, "RibbonXP": r.RibbonXP, "RibbonCredits": r.RibbonCredits,
+		} {
+			v = strings.ReplaceAll(v, " ", "")
+			if v == "" {
+				continue
+			}
+			if _, err := strconv.ParseFloat(v, 64); err == nil {
+				continue // a plain number applies to every mode
+			}
+			have := map[string]bool{}
+			for _, m := range scoringModeValue.FindAllStringSubmatch(v, -1) {
+				have[m[1]] = true
+			}
+			for _, m := range modes {
+				if m != "" && !have[m] {
+					t.Errorf("%s %s %q has no value for mode %s: the client logs ParseRewardForEvent and skips the rest of the row",
+						r.Enum, field, v, m)
+				}
+			}
+		}
+	}
+}
+
+// The zeros spelled out for PlayTime / BERSERKER credits must not move a
+// payout: 1.11.1 (the live game's table outside Conquest) had no credits for
+// either, 1.12.0 (Conquest only) paid TER(10) and TER(1).
+func TestExplicitZeroCreditsKeepTheOriginalPayout(t *testing.T) {
+	for event, ter := range map[string]int{"PlayTime": 10, "RecentIncomingRawDamageXCloseEnemies": 1} {
+		r, ok := findOriginalScoringRow(event)
+		if !ok {
+			t.Fatalf("no %s row", event)
+		}
+		for _, mode := range []string{"TDM", "TE", "IVN", "POD_TDM", "BC", "TURBO_TDM", "TM"} {
+			if got := scoringValueFor(r.EventCredits, mode); got != 0 {
+				t.Errorf("%s credits in %s = %d, want 0 (1.11.1 had none)", event, mode, got)
+			}
+		}
+		if got := scoringValueFor(r.EventCredits, "TER"); got != ter {
+			t.Errorf("%s credits in TER = %d, want %d", event, got, ter)
+		}
+		if !strings.Contains(strings.ReplaceAll(r.EventCredits, " ", ""), "TDM(0)") {
+			t.Errorf("%s credits %q: TDM's 0 is not spelled out", event, r.EventCredits)
+		}
+	}
+	// The client's own table carries the explicit zeros; the host's still has
+	// no PlayTime (end-of-match event), but BERSERKER's row does.
+	if countWireStringField(string(scoringDocument()), "EventCredits",
+		"TDM(0) : TE(0) : IVN(0) : POD_TDM(0) : BC(0) : TER(1) : TURBO_TDM(0)") != 1 {
+		t.Error("host document lacks BERSERKER's explicit-zero credits")
 	}
 }

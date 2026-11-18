@@ -129,7 +129,19 @@ def main():
         for f in VALUE_FIELDS:
             ter = [v for m, v in segments(r12[f]) if m == "TER"]
             if ter:
-                row[f] = (row[f] + " : " if row[f] else "") + "TER(%s)" % ter[0]
+                if not row[f]:
+                    # 1.11.1 left this field EMPTY (PlayTime and BERSERKER
+                    # EventCredits: no credits outside Conquest). A field with
+                    # only "TER(n)" is not empty, though, and the client's
+                    # ParseRewardForEvent (0x429E20) logs "doesn't have a
+                    # reward set up for m_eventCredits" for every mode in
+                    # GameModes it names no value for -- and stops there, so
+                    # the row's ribbon half is not read either. Spell out the
+                    # 0 the empty field meant: same payout, no error.
+                    row[f] = "".join("%s(0) : " % m for m in modes(row["GameModes"]) if m != "TER")
+                else:
+                    row[f] += " : "
+                row[f] += "TER(%s)" % ter[0]
         if "TER" not in modes(row["GameModes"]):
             row["GameModes"] = (row["GameModes"] + " : " if row["GameModes"] else "") + "TER"
 
