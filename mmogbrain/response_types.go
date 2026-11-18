@@ -144,12 +144,20 @@ func (loadout mmogShipLoadoutSeed) displayInfo() string {
 			return info
 		}
 	}
-	// What the player actually chose wins over the computed default. Without
-	// this every customisation was answered with the stock appearance on the
-	// next load, so the ship the player built was never the ship they got back.
+	// What the player actually chose wins over the computed default.
+	// Without this every customisation was answered with the stock
+	// appearance on the next load, so the ship the player built was never
+	// the ship they got back. Only its EMPTY emblem/paint/pattern/decal
+	// groups are filled from the default (repairedShipDisplayInfo).
 	if info := strings.TrimSpace(loadout.savedDisplayInfo); info != "" {
-		return info
+		return repairedShipDisplayInfo(info, loadout.repairDefaultDisplayInfo)
 	}
+	return loadout.computedDisplayInfo()
+}
+
+// computedDisplayInfo is the appearance of a ship nobody has customised: its
+// blueprint's own look, else the hull line's default.
+func (loadout mmogShipLoadoutSeed) computedDisplayInfo() string {
 	hullLine, ok := shipHullLine(loadout.ship.id)
 	if !ok {
 		return noShipVanityDisplayInfo
@@ -160,6 +168,85 @@ func (loadout mmogShipLoadoutSeed) displayInfo() string {
 		return info
 	}
 	return dreadconfig.DefaultShipDisplayInfo(hullLine, shipManufacturer(loadout.ship))
+}
+
+// repairDefaultDisplayInfo is the default repairedShipDisplayInfo fills empty
+// groups from: computedDisplayInfo, except for a ship whose item id resolves
+// to no asset (the tier-4 hulls: their YPawn ids exist nowhere in the client,
+// so shipHullLine fails and computedDisplayInfo would answer "-1" in every
+// slot, which fills nothing). For those the hull line comes from the roster
+// (baseShipLoadouts, pinned to the client's cooked blueprints) and the maker
+// from baseShipManufacturerByClassSize, the same tables every other tier uses.
+// computedDisplayInfo itself is left as it was, so an uncustomised tier-4 ship
+// is still answered the way it was before (see the operator note in the
+// change description).
+func (loadout mmogShipLoadoutSeed) repairDefaultDisplayInfo() string {
+	if _, ok := shipHullLine(loadout.ship.id); ok {
+		return loadout.computedDisplayInfo()
+	}
+	for _, b := range baseShipLoadouts {
+		if b.loadoutID != loadout.precastLoadoutID {
+			continue
+		}
+		maker := baseShipManufacturerByClassSize[b.hullLine]
+		if info, ok := dreadconfig.ShipBlueprintDisplayInfo(b.loadoutID, b.hullLine, maker); ok {
+			return info
+		}
+		return dreadconfig.DefaultShipDisplayInfo(b.hullLine, maker)
+	}
+	return loadout.computedDisplayInfo()
+}
+
+// repairedShipDisplayInfo fills the EMPTY emblem, paint, pattern and decal
+// groups of a client-saved ship appearance with the ship's own default for
+// that group (the string computedDisplayInfo would send an uncustomised ship).
+//
+// Why: the client exports ";;;;"-style strings for slots it has nothing in --
+// 695 empty groups across 1589 stored appearances on 2026-11-19, 5 of them
+// with empty meshes too -- and the customisation preview blueprint
+// (VH_CustomisationPreview_BP ReceiveTick) reads m_appearance.m_emblem and
+// m_colorSet every tick, so a None emblem or paint is an Accessed-None script
+// call stack warning EVERY FRAME (thousands per client log).
+//
+// Rules: a non-empty group is the player's choice and is never touched; the
+// mesh group (first) is never touched; a string that is not exactly five
+// groups is returned as is (the client's importer would reject it anyway);
+// "" (what the client exports), "-1" and "0" (the empty slot spellings
+// unownedAppearanceItems uses) are empty. When the default has no value for a
+// group either, the saved group stays as it was. Nothing is written back to
+// the database: the repair happens on every read, so a stored row is only
+// replaced when the client itself saves again (and then saves the complete
+// string it was sent).
+//
+// GUESS: a player who deliberately removed an emblem/paint in the customiser
+// gets the default back; the preview errors on None every frame, so keeping
+// the slot empty is not an option, but whether the client lets a player
+// remove one at all is not verified.
+func repairedShipDisplayInfo(saved string, computed func() string) string {
+	groups := strings.Split(saved, ";")
+	if len(groups) != 5 {
+		return saved
+	}
+	empty := func(g string) bool {
+		g = strings.TrimSpace(g)
+		return g == "" || g == "-1" || g == "0"
+	}
+	var defaults []string
+	for i := 1; i < 5; i++ {
+		if !empty(groups[i]) {
+			continue
+		}
+		if defaults == nil {
+			defaults = strings.Split(computed(), ";")
+			if len(defaults) != 5 {
+				return saved
+			}
+		}
+		if !empty(defaults[i]) {
+			groups[i] = strings.TrimSpace(defaults[i])
+		}
+	}
+	return strings.Join(groups, ";")
 }
 
 // nativeStarterLoadoutClassName is the blueprint class the client instantiates
