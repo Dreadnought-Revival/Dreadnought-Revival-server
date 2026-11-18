@@ -89,6 +89,43 @@ func serverChatProfile() map[string]any {
 	})
 }
 
+// sendServerProfile gives this connection the Server sender's user.profile,
+// which fills the client's name cache so the Server's chat lines show their
+// name.
+//
+// Every user.profile whose guid is not the receiving player's own makes the
+// stock client log "LogYFirmament:Error: Failed to get current user profile"
+// (YFirmamentClient.cpp:0x406). Verified in the binary, 2026-11-18: the
+// "user.profile" callback (0x142AA1290) receives data.guid -- NOT data.profile,
+// as the comment on selfUserProfileEvent used to claim -- and 0x142AA9B60 logs
+// unless that guid equals the client's own id. The same guid is the key the
+// dispatcher (0x142A8DFA0) files the record under, so a profile cannot be both
+// cached for someone else and accepted by the callback; the error is the price
+// of every name cached for another player, and the log line is harmless (the
+// callback just returns).
+//
+// What can be avoided is repeating it. The cache lives as long as the
+// connection, so the profile goes out once per connection, not before every
+// automatic line (the online count alone is one every few minutes per player).
+// force re-sends it -- the answer to a user.whois for the Server GUID, which is
+// the client saying its cache has no entry. The flag is set only after the push
+// was queued, so a dropped one is retried with the next line.
+func (p *socialPeer) sendServerProfile(force bool) error {
+	p.mu.Lock()
+	sent := p.serverProfileSent
+	p.mu.Unlock()
+	if sent && !force {
+		return nil
+	}
+	if err := p.send(serverChatProfile()); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	p.serverProfileSent = true
+	p.mu.Unlock()
+	return nil
+}
+
 // announce posts one automatic Server line (online count, open queues) to
 // everyone in the Global channel, unless DN_SERVER_CHAT=0. Each player's copy
 // starts with the time in their own clock (chatTimeStamp, player_clock.go;
@@ -98,11 +135,10 @@ func (h *socialHub) announce(text string) {
 		return
 	}
 	channel := defaultChatChannels[0]
-	profile := serverChatProfile()
 	now := time.Now()
 	sent := 0
 	for _, peer := range h.peersIn(channel) {
-		_ = peer.send(profile)
+		_ = peer.sendServerProfile(false)
 		_ = peer.send(chatMessageNotice("chat.channel.message", channel, serverChatEntry(), chatTimeStamp(peer.playerID, now)+text))
 		sent++
 	}
@@ -114,11 +150,10 @@ func (h *socialHub) announce(text string) {
 // directly: DN_SERVER_CHAT turns off only the automatic lines.
 func (h *socialHub) serverLine(text string) int {
 	channel := defaultChatChannels[0]
-	profile := serverChatProfile()
 	msg := chatMessageNotice("chat.channel.message", channel, serverChatEntry(), text)
 	sent := 0
 	for _, peer := range h.peersIn(channel) {
-		_ = peer.send(profile)
+		_ = peer.sendServerProfile(false)
 		_ = peer.send(msg)
 		sent++
 	}
@@ -129,7 +164,7 @@ func (h *socialHub) serverLine(text string) int {
 // serverLineTo posts one Server line to one player only (the message of
 // the day).
 func serverLineTo(peer *socialPeer, text string) error {
-	if err := peer.send(serverChatProfile()); err != nil {
+	if err := peer.sendServerProfile(false); err != nil {
 		return err
 	}
 	return peer.send(chatMessageNotice("chat.channel.message", defaultChatChannels[0], serverChatEntry(), text))

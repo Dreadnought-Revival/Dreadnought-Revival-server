@@ -84,6 +84,73 @@ func TestServerAnnouncementReachesGlobal(t *testing.T) {
 	}
 }
 
+// The Server's user.profile goes out once per connection, not before every
+// line: each user.profile for a guid other than the receiver's own makes the
+// stock client log "Failed to get current user profile" (see
+// sendServerProfile), and the cache it fills lives as long as the connection.
+// A user.whois for the Server GUID forces a re-send (the client says its cache
+// has no entry), and a new connection gets it again.
+func TestServerProfileSentOncePerConnection(t *testing.T) {
+	useTempMmogPlayerStateDB(t)
+	hub := socialTestHub(t)
+	peer, read := socialTestPeer(t, hub, "player-a")
+	pushes := pushLines(read)
+
+	hub.announce("first")
+	hub.serverLine("second")
+	if err := serverLineTo(peer, "third"); err != nil {
+		t.Fatal(err)
+	}
+	var profiles, messages []string
+	for i := 0; i < 4; i++ { // 1 profile + 3 lines
+		typ, data := nextPush(t, pushes)
+		switch typ {
+		case "user.profile":
+			profiles = append(profiles, data["guid"].(string))
+		case "chat.channel.message":
+			messages = append(messages, unstamped2(data["text"]))
+		default:
+			t.Fatalf("unexpected push %s", typ)
+		}
+	}
+	if len(profiles) != 1 || profiles[0] != serverChatGUID {
+		t.Fatalf("profiles pushed for three lines: %v, want exactly one for the Server", profiles)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("messages: %v", messages)
+	}
+	if !noPush(pushes, 100*time.Millisecond) {
+		t.Fatal("more pushes than one profile and three lines")
+	}
+
+	// whois for the Server GUID: forced re-send, then the reply.
+	handleUserMethod(socialRequest{method: "user.whois", hub: hub, peer: peer,
+		params: map[string]any{"users": []any{serverChatGUID}}})
+	if typ, data := nextPush(t, pushes); typ != "user.profile" || data["guid"] != serverChatGUID {
+		t.Fatalf("whois push %s %v, want the Server user.profile", typ, data)
+	}
+
+	// A new connection (a reconnect has an empty client cache) gets it again.
+	_, read2 := socialTestPeer(t, hub, "player-b")
+	pushes2 := pushLines(read2)
+	hub.serverLine("fourth")
+	if typ, _ := nextPush(t, pushes2); typ != "user.profile" {
+		t.Fatalf("new connection's first push %s, want user.profile", typ)
+	}
+	if typ, _ := nextPush(t, pushes2); typ != "chat.channel.message" {
+		t.Fatalf("new connection's second push %s, want the line", typ)
+	}
+}
+
+// unstamped2 is the text of a line that may or may not carry a time stamp.
+func unstamped2(line any) string {
+	s, _ := line.(string)
+	if m := stampedRE.FindStringSubmatch(s); m != nil {
+		return m[1]
+	}
+	return s
+}
+
 // user.whois for the Server GUID answers with its name, so a client that
 // lost the profile can still name the line.
 func TestWhoisNamesTheServer(t *testing.T) {

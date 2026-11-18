@@ -135,6 +135,9 @@ type socialPeer struct {
 	// recent is when this player's last chat lines were sent, for the flood
 	// limit (chatFloodAllowed).
 	recent []time.Time
+	// serverProfileSent is set once this connection was sent the Server
+	// sender's user.profile (sendServerProfile, server_chat.go).
+	serverProfileSent bool
 }
 
 // Limits on what a player sends to others (2026-11-10 social audit). The
@@ -1020,11 +1023,19 @@ func firmamentSelfProfile(playerID, peerID string) map[string]any {
 //     data.guid; the record builder (0x142A8CE00) reads guid, full_display_name,
 //     display_name, number, public_id, status_message, global_silence_expires
 //     and the is_* / status flags.
-//   - The callback is keyed by data.profile, and 0x142AA9B60 accepts it only if
-//     it equals the client's own id -- server.notice data.notice.user_token --
-//     then parses the record's guid as a GUID into +0x3A8.
+//   - The callback receives data.guid (CORRECTED 2026-11-18; this said
+//     data.profile, which no code path reads: the dispatch routine 0x142A8FB80
+//     looks up the key "guid" in the event's data node at +0x48 and hands it
+//     to the callback as its 4th argument, rcx/rdx/r8/r9 = event, "", "profile",
+//     data.guid). 0x142AA9B60 finds that guid's cached record (the dispatcher
+//     stores it first), accepts it only if it equals the client's own id --
+//     server.notice data.notice.user_token -- then parses the record's guid as
+//     a GUID into +0x3A8; any other guid logs "Failed to get current user
+//     profile" and returns.
 //
-// So guid, profile and user_token must all be the same dashed GUID.
+// So guid and user_token must be the same dashed GUID. "profile" is sent but
+// unread. Every profile pushed for another player therefore logs that error
+// once; it is log noise only (see sendServerProfile).
 func selfUserProfileEvent(playerID, peerID string) map[string]any {
 	return userProfileEvent(playerID, peerID, true)
 }

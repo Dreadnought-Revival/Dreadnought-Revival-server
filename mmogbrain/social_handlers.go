@@ -119,7 +119,7 @@ func handleUserMethod(r socialRequest) map[string]any {
 			if isServerChatID(id) { // the sender of server announcements (server_chat.go)
 				found = append(found, serverChatEntry())
 				if r.peer != nil {
-					_ = r.peer.send(serverChatProfile())
+					_ = r.peer.sendServerProfile(true)
 				}
 				continue
 			}
