@@ -1452,6 +1452,8 @@ static void __fastcall HookGameModeTimer(void *gameMode) {
 #define ONS_KILL_LIMIT_OFF 1000000
 #define OFF_GS_WINNING_TEAM_FINAL 0x56B // GameState final match result (0 while playing)
 #define OFF_PAWN_IS_AI_TARGET 0x950 // YPawn: what vtable +0x7E0 returns
+#define OFF_GS_MATCH_RUNNING 0x569 // m_isMatchStarted (same value defined again with the AI start below)
+#define OFF_GS_MATCH_OVER 0x56A
 #ifndef OFF_USTRUCT_SUPER
 #define OFF_USTRUCT_SUPER 0x30
 #endif
@@ -1760,6 +1762,12 @@ static void __fastcall HookTdmKilled(void *gameMode, void *killer, void *victimC
   if (killer && killer != victimCtrl && victimPawn &&
       IsReadable((uint8_t *)victimPawn + OFF_PAWN_SHIP_CLASS, 1))
     victimClass = ((uint8_t *)victimPawn)[OFF_PAWN_SHIP_CLASS];
+  // Onslaught: a kill before the match has started (GameState +0x569 still 0)
+  // scores nothing. The original Killed (0x375F30) checks only +0x56A (match
+  // over), so it would count it.
+  bool preMatch = gs && IsReadable(gs + OFF_GS_MATCH_RUNNING, 2) && !gs[OFF_GS_MATCH_RUNNING];
+  if (preMatch)
+    victimClass = -1; // no contract / kill-detail record either
   // Man Of The Day, TDM family: the original call ends the match when a
   // team's kills reach the game mode's m_killsForWinning (+0x9DC, via
   // 0x3685C0). Lifted to ONS_KILL_LIMIT_OFF in Onslaught, so it never fires
@@ -1815,6 +1823,19 @@ static void __fastcall HookTdmKilled(void *gameMode, void *killer, void *victimC
 
   if (!gs)
     return;
+  if (preMatch) {
+    __try {
+      // Undo what the original just added (+1 per non-creep kill).
+      *(int32_t *)(gs + OFF_GS_KILLS_T1) = kills1;
+      *(int32_t *)(gs + OFF_GS_KILLS_T2) = kills2;
+      static int s_logged = 0;
+      if (s_logged++ < 20)
+        Logf("onslaught: %s killed BEFORE the match started -- not counted (points stay T1 %d T2 %d)",
+             ClassNameOf(victimPawn), OnslaughtPoints(gs, 1), OnslaughtPoints(gs, 2));
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return;
+  }
   __try {
     int size = CreepSize(victimPawn);
     // The assault ship and command ship are not creeps (no vtable +0x7E0),
@@ -1908,9 +1929,14 @@ static void __fastcall HookDetermineLeader(void *gameMode) {
 // So once a second, on an Onslaught host, this spawns the initial ships at the
 // InitialSpawn points, then keeps each team at its maximum: a missing ship is
 // respawned at a Spawn point once it has been missing for the respawn time.
-// GUESS: the first wave goes out 20 s after the match starts (the per-point
-// m_beginMatchSpawnDelay is read but its use is not traced); alive ships are
-// counted from GObjects (class + team, not pending kill).
+// The first wave goes out when the MATCH starts (GameState +0x569, set by
+// AYGameMode_Multiplayer::BeginBattle 0x367B30 via 0x367D50, after the pre-match
+// countdown and the orbit teleport), plus the spawn points' own
+// m_beginMatchSpawnDelay (+0x434; not set on any placed point, so the native
+// default). Until 2026-11-18 it went out 20 s after the first game-mode tick,
+// which is 50-120 s BEFORE the match starts: the fighters flew and died during
+// the lineup, and their kills counted. Alive ships are counted from GObjects
+// (class + team, not pending kill).
 #define RVA_SPAWN_CREEP 0x264B30
 #define RVA_COMBAT_SCENE_MANAGER 0x2529E0
 #define RVA_GS_FLEET_TYPE 0x396C50        // as GetAISpawnTier reads it
@@ -1918,6 +1944,7 @@ static void __fastcall HookDetermineLeader(void *gameMode) {
 #define OFF_CLASSPTR_CREEP_NAV 0x3E11A58       // YCreepNavigation UClass* (registration 0x6007C0)
 #define OFF_SPAWN_CLASS 0x428
 #define OFF_SPAWN_TEAM 0x430
+#define OFF_SPAWN_BEGIN_DELAY 0x434 // YCreepNavigationSpawn::m_beginMatchSpawnDelay (float, seconds)
 #define OFF_GM_ONS_SMALL_CLASS 0xA58
 #define OFF_GM_ONS_MID_CLASS 0xA68
 #define OFF_GM_ONS_BIG_CLASS 0xA78
@@ -1938,6 +1965,7 @@ struct OnsSpawnPoint {
 struct OnsCreepState {
   void *gm;
   DWORD firstSeen;
+  DWORD matchStartedAt; // first tick that saw GameState +0x569 (m_isMatchStarted); 0 until then
   bool firstWave;
   int nPoints;
   OnsSpawnPoint points[256];
@@ -2592,18 +2620,44 @@ static void OnslaughtCreepTick(uint8_t *gm) {
       return;
     if (IsReadable(gs + OFF_GS_WINNING_TEAM_FINAL, 1) && gs[OFF_GS_WINNING_TEAM_FINAL] != 0)
       return; // the match has a result
-    if (now - st.firstSeen < ONS_FIRST_WAVE_DELAY_MS)
-      return;
     // Smoke only (dn_host_onslaught_smoke.txt): start the match with nobody
     // joined, as the Conquest and TE smoke switches do, so the AI of the
     // ships spawned below starts (0x288AE0 runs only while the match does).
+    // 20 s after the first tick, as before.
     static void *s_smoke = nullptr;
-    if (s_smoke != gm && !gs[OFF_GS_MATCH_RUNNING] &&
+    if (s_smoke != gm && !gs[OFF_GS_MATCH_RUNNING] && now - st.firstSeen >= ONS_FIRST_WAVE_DELAY_MS &&
         SwitchOn("DN_HOST_ONSLAUGHT_SMOKE", "dn_host_onslaught_smoke.txt")) {
       s_smoke = gm;
       Logf("onslaught: SMOKE -- starting match %p with nobody joined", gm);
       ((void(__fastcall *)(void *))(*(void ***)gm)[0x660 / 8])(gm);
       ((void(__fastcall *)(void *, char))(g_base + 0x380F70))(gs, 1);
+    }
+    // Nothing spawns, and no kill counts, until the match has started: the
+    // players are in orbit (lineup / ship selection) during the pre-match
+    // countdown. The original's own NPC AI waits for the same flag
+    // (0x378DE0 / 0x288AE0, see NpcAiStartTick).
+    if (!IsReadable(gs + OFF_GS_MATCH_RUNNING, 2) || !gs[OFF_GS_MATCH_RUNNING] || gs[OFF_GS_MATCH_OVER])
+      return;
+    if (!st.matchStartedAt) {
+      st.matchStartedAt = now;
+      // Fresh scores for the match: nothing before this point may have counted.
+      int zero[2] = {0, 0}, creepKills = 0;
+      if (g_ons.gm == gm) {
+        for (int t = 0; t < 2; ++t)
+          for (int k = 0; k < 3; ++k) {
+            creepKills += g_ons.creeps[t][k];
+            g_ons.creeps[t][k] = 0;
+          }
+      }
+      for (int i = 0; i < 6; ++i)
+        *(int32_t *)(gs + OFF_GS_ONS_CREEP_KILLS + 4 * i) = 0;
+      zero[0] = *(int32_t *)(gs + OFF_GS_KILLS_T1);
+      zero[1] = *(int32_t *)(gs + OFF_GS_KILLS_T2);
+      *(int32_t *)(gs + OFF_GS_KILLS_T1) = 0;
+      *(int32_t *)(gs + OFF_GS_KILLS_T2) = 0;
+      Logf("onslaught: match %p STARTED (GameState +0x569) %lu ms after the first game-mode tick; scores reset "
+           "(had %d creep kills, ship kills T1 %d T2 %d)", gm, (unsigned long)(now - st.firstSeen), creepKills,
+           zero[0], zero[1]);
     }
     if (st.nPoints == 0 || now - st.lastScan > 30000) {
       st.lastScan = now;
@@ -2612,6 +2666,18 @@ static void OnslaughtCreepTick(uint8_t *gm) {
       if (st.nPoints != before)
         Logf("onslaught creeps: %d spawn points on this map", st.nPoints);
       if (st.nPoints == 0)
+        return;
+    }
+    if (!st.firstWave && st.nPoints > 0) {
+      // m_beginMatchSpawnDelay of the initial points (seconds, native default; 0 unless set).
+      float delay = 0.0f;
+      for (int i = 0; i < st.nPoints; ++i)
+        if (st.points[i].initial && IsReadable((uint8_t *)st.points[i].actor + OFF_SPAWN_BEGIN_DELAY, 4)) {
+          float d = *(float *)((uint8_t *)st.points[i].actor + OFF_SPAWN_BEGIN_DELAY);
+          if (d > delay && d <= 60.0f)
+            delay = d;
+        }
+      if (now - st.matchStartedAt < (DWORD)(delay * 1000.0f))
         return;
     }
     int maxN[3] = {*(int32_t *)(gm + 0xA60), *(int32_t *)(gm + 0xA70), *(int32_t *)(gm + 0xA90)};
