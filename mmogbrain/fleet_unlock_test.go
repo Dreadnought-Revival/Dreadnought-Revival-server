@@ -10,9 +10,11 @@ import (
 
 // The client treats every fleet it is sent as unlocked (UpdatePlayerFleetData
 // 0x35FDF0 sets each entry's lock count +0x3C to 0), so a fleet unlocks by
-// being sent. The game's rule: "Unlock one ship of Tiers III-IV / IV-V to
-// access this Fleet" (Veteran / Legendary). Empty fleets were never sent, so
-// both stayed locked forever ("the others are locked", operator 2026-09-30).
+// being sent. The rule the fleet-select screen states (UI_Button_SelectFleet
+// literals): "UNLOCK A TIER II-III / IV-V SHIP TO ACCESS" (Veteran /
+// Legendary). Empty fleets were never sent, so both stayed locked forever
+// ("the others are locked", operator 2026-09-30); Veteran then waited for a
+// tier III ship while the screen asked for tier II-III (2026-11-19).
 func TestFleetsUnlockByOwnedShipTier(t *testing.T) {
 	database := useTempMmogPlayerStateDB(t)
 	const pid = "650dd79476a1484b8adcd01ac2f17354"
@@ -47,8 +49,8 @@ func TestFleetsUnlockByOwnedShipTier(t *testing.T) {
 		}
 	}
 	grant(hullOfTier(2))
-	if got := fleetCount(); got != 1 {
-		t.Errorf("owning a tier-2 ship: %d fleets, want 1 (tier II unlocks nothing new)", got)
+	if got := fleetCount(); got != 2 {
+		t.Errorf("owning a tier-2 ship: %d fleets, want 2 (Recruit + Veteran: II-III)", got)
 	}
 	grant(hullOfTier(3))
 	if got := fleetCount(); got != 2 {

@@ -1255,10 +1255,18 @@ func appendMmogFleetUnlockEntry(b []byte, stack []int, fleet mmogFleetSeed) ([]b
 	return b, stack
 }
 
-// fleetUnlockTiers is the ship tier range that unlocks a fleet type, from the
-// game's own text: "Unlock one ship of Tiers I-II / III-IV / IV-V to access
-// this Fleet" (Recruit / Veteran / Legendary).
-var fleetUnlockTiers = map[int32][2]int32{1: {1, 2}, 2: {3, 4}, 3: {4, 5}}
+// fleetUnlockTiers is the ship tier range that unlocks a fleet type: what the
+// fleet-select screen tells the player on a locked fleet. Those labels are
+// literals in the shipped widget (UI_Button_SelectFleet.uasset): "UNLOCK A
+// TIER I-II / II-III / IV-V SHIP TO ACCESS" (Recruit / Veteran / Legendary),
+// the same tiers each fleet may hold (FleetEligibility.AllowedTiers).
+//
+// Until 2026-11-19 Veteran took III-IV, from a DreadGame_UI.locres string
+// ("Unlock one ship of Tiers III-IV to access this Fleet.") that the screen
+// does not show. A player with tier II ships read "unlock a tier II-III ship"
+// on a Veteran fleet that stayed locked (operator screenshot, 2026-11-19), and
+// a tier IV ship, which the Veteran fleet cannot hold, unlocked it.
+var fleetUnlockTiers = map[int32][2]int32{1: {1, 2}, 2: {2, 3}, 3: {4, 5}}
 
 // unlockedFleets filters a fleet list to the fleets the player has unlocked:
 // Recruit, any fleet that is active or holds ships, and any fleet whose unlock
