@@ -5334,6 +5334,24 @@ func buildMmogBoosterDataPayload() []byte {
 	var stack []int
 
 	b = protocol.AppendStringField(b, "RT", "YA_GetBoosterData")
+	// BOTH tables live INSIDE "result", not at the payload root. The client's
+	// dispatcher for this reply (0x2A2C81D..0x2A2C854, selected by RT ==
+	// "YA_GetBoosterData") looks up the child named "result" of the root
+	// (0x2A2C83A: lea rdx,"result" -> 0x237D40, the by-name accessor) and
+	// hands THAT node to the table reader FUN_142A65FE0 at mmog+0x4478, which
+	// reads "BoosterTable" and "GoldMembershipTable" from it. Until 2026-11-19
+	// both arrays sat at the root beside a "result" holding only the status, so
+	// the reader found neither (a missing child is the shared empty node) and
+	// the client's BoosterTable (mmog+0x4478) and GoldMembershipTable
+	// (mmog+0x4488) were empty for every player: no end-of-match booster flag
+	// could ever be set (0x345980 intersects PRI+0x7B8 with these tables), so
+	// the rewards page showed the INACTIVE overlay on Win Bonus, First Win,
+	// Elite and Battle Ready (0x469CE0), and the hangar's elite panel logged
+	// "index 0..2 from array Bonuses of length 0". The same nesting as
+	// YA_GetCareerProgression / YA_GetLeaderboardData, whose content also lives
+	// in "result" (career_goals.go, leaderboard.go).
+	b, stack = protocol.AppendObjectStart(b, stack, "result")
+	b = protocol.AppendStringField(b, fieldStatus, "ok")
 	// The game's own boosters (boosters.go). CHANGED 2026-11-14: these were
 	// invented values (Elite 1.5/1.25, wrong types for the Battle Ready
 	// boosters, effect type 0 = YBT_NONE); the client labels the rewards
@@ -5345,19 +5363,16 @@ func buildMmogBoosterDataPayload() []byte {
 	b, stack = protocol.AppendObjectEnd(b, stack)
 	// GoldMembershipTable: Elite Status. CHANGED 2026-11-14: sent empty
 	// before, on the belief that the client read it as an array of strings.
-	// It does not: the reader (FUN_142a65fe0) parses BOTH tables with the
-	// same booster-entry parser FUN_142a66500 into 0x20-byte entries (id,
+	// It does not: the reader (FUN_142A65FE0) parses BOTH tables with the
+	// same booster-entry parser FUN_142A66500 into 0x20-byte entries (id,
 	// active, type, effects), BoosterTable to mmog+0x4478 and this one to
 	// mmog+0x4488. The rewards screen takes the Elite credits multiplier from
 	// entry 0 here (0x340C40), and the end-of-match booster flags merge both
-	// (0x345980). The hangar elite panel's "index 0..2 from array Bonuses of
-	// length 0" (AGENT-CHAT S11.5) is suspected to be this table being empty.
+	// (0x345980).
 	b, stack = protocol.AppendArrayStart(b, stack, "GoldMembershipTable")
 	b, stack = appendBoosterEntry(b, stack, goldMembership)
 	b, stack = protocol.AppendObjectEnd(b, stack)
-	b, stack = protocol.AppendObjectStart(b, stack, "result")
-	b = protocol.AppendStringField(b, fieldStatus, "ok")
-	b, _ = protocol.AppendObjectEnd(b, stack)
+	b, _ = protocol.AppendObjectEnd(b, stack) // result
 	return b
 }
 
