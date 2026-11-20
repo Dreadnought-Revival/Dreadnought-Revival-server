@@ -543,6 +543,12 @@ func startCustomRoomMatch(pid string) []byte {
 	}
 	others := room.others(pid)
 	customRooms.Unlock()
+	// What the lobby's AI PLAYERS checkboxes ("Fill Team 1/2", settings 1/2;
+	// the only AI control the client has: the per-slot checkbox of an empty
+	// row is HitTestInvisible and nothing reads GetIsAddAiChecked) came to.
+	// The host log's "team ai: DNTeamAI on the command line" must agree.
+	logrus.WithFields(logrus.Fields{"room": room.id, "mode": match.Mode, "map": match.Map, "team_size": match.TeamSize,
+		"team_ai": match.TeamAI, "players": len(match.Players)}).Info("custom room: starting match")
 
 	mm := activeMatchmaker
 	if mm == nil {
@@ -648,12 +654,66 @@ func customRoomSettingInt(room *customRoom, id, def int) int {
 
 // customRoomMode is a mode the room offers: the one asked for, else TDM.
 func customRoomMode(mode string) string {
+	if strings.EqualFold(mode, customRoomEscalationKey) {
+		mode = matchmaker.EscalationGameMode
+	}
 	for _, m := range matchmaker.CustomRoomModes() {
 		if strings.EqualFold(m.Mode, mode) {
 			return m.Mode
 		}
 	}
 	return "TDM"
+}
+
+// The lobby's mode and map dropdowns are filled from roomInfo.supportedModes
+// only (verified 2026-11-20: the client has no request for them; parser
+// 0x2A69BB0 -> room record, GetSelectableGameModes 0x323270-0x3237xx,
+// GetSelectableMaps 0x323720), but every option's LABEL comes from the
+// client's own GlobalUI asset (UYUIData::GetLoadingScreenTexts, 0x4EC800-
+// 0x4ED0BE): the mode name must equal an m_loadingScreenGameModeData key
+// (TE, TDM, PodTDM, Onslaught, HAVOC, BC, TM, TER, TurboTDM) and the map name
+// an m_multiplayerMaps m_mapName. A mode without a key gets an EMPTY label
+// (the function returns fewer than 3 texts and logs "No matching game mode
+// name found under Loading Screen Game Mode Data in GlobalUI!"). The room
+// list sent until 2026-11-20 offered "Escalation", which has no key: that
+// warning appeared four times at every Create (six of six uploaded lobby
+// logs, 2026-11-18..20), and the blank option made UI_Dropdown_Generic's own
+// ClearOptions -> OnSelectionChanged("") -> HandleOptionSelection("") pick
+// it (the first option whose text is "") so every room's first request was
+// ChangeSettings{Escalation} before the lobby itself corrected it to TDM.
+var customRoomLabelledModes = map[string]bool{
+	"TE": true, "TDM": true, "PodTDM": true, "Onslaught": true, "HAVOC": true,
+	"BC": true, "TM": true, "TER": true, "TurboTDM": true,
+}
+
+// customRoomEscalationKey is the labelled key Escalation travels under in the
+// lobby: GlobalUI's "BC" entry is "Proving Grounds", the queue name Escalation
+// ran under (2026-11-04..06). GUESS: the original lobby never offered a mode
+// of ours; any key in customRoomLabelledModes the room does not otherwise use
+// would show a label. Delete this alias to take Escalation out of the lobby.
+const customRoomEscalationKey = "BC"
+
+// customRoomWireMode is the name the lobby is told for a room mode.
+func customRoomWireMode(mode string) string {
+	if mode == matchmaker.EscalationGameMode {
+		return customRoomEscalationKey
+	}
+	return mode
+}
+
+// customRoomLobbyModes are the supportedModes entries: the room modes under
+// their wire names, only those the client can label.
+func customRoomLobbyModes() []matchmaker.CustomRoomMode {
+	var out []matchmaker.CustomRoomMode
+	for _, m := range matchmaker.CustomRoomModes() {
+		m.Mode = customRoomWireMode(m.Mode)
+		if !customRoomLabelledModes[m.Mode] {
+			logrus.WithField("mode", m.Mode).Warn("custom room: mode has no GlobalUI label, not offered")
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // customRoomMap is a map the mode offers: the one asked for, else its first.
@@ -689,7 +749,7 @@ func buildCustomRoomSettingsPayload(responseName string, room *customRoom) []byt
 	b = protocol.AppendStringField(b, fieldStatus, "ok")
 	b = protocol.AppendInt32Field(b, "Code", 0)
 	b, stack = protocol.AppendObjectEnd(b, stack)
-	b = protocol.AppendStringField(b, "gameMode", room.mode)
+	b = protocol.AppendStringField(b, "gameMode", customRoomWireMode(room.mode))
 	b = protocol.AppendStringField(b, "mapName", room.mapName)
 	b, _ = appendCustomRoomSettings(b, stack, room)
 	return b
@@ -703,6 +763,18 @@ func appendCustomRoomSettings(b []byte, stack []int, room *customRoom) ([]byte, 
 			continue
 		}
 		b, stack = protocol.AppendUnnamedObjectStart(b, stack)
+		if id == 1 || id == 2 {
+			// The client reads a team's fill flag as "value == \"1\"" exactly
+			// (IsFillTeamWithAiFlagSet 0x322B70 compares with the 1-character
+			// literal at 0x2E555DC), while the server reads any non-zero float
+			// as on. Send the canonical form so the checkbox the host sees
+			// (HandleSettingsChanged -> SetIsChecked) is the flag the battle
+			// server gets (DNTeamAI).
+			v = "0"
+			if customRoomSettingInt(room, id, 0) != 0 {
+				v = "1"
+			}
+		}
 		b = protocol.AppendStringField(b, "id", strconv.Itoa(id))
 		b = protocol.AppendStringField(b, "value", v)
 		b, stack = protocol.AppendObjectEnd(b, stack)
@@ -738,11 +810,11 @@ func appendCustomRoomInfo(b []byte, stack []int, room *customRoom) ([]byte, []in
 		b, stack = protocol.AppendObjectEnd(b, stack)
 	}
 	b, stack = protocol.AppendObjectEnd(b, stack)
-	b = protocol.AppendStringField(b, "gameMode", room.mode)
+	b = protocol.AppendStringField(b, "gameMode", customRoomWireMode(room.mode))
 	b = protocol.AppendStringField(b, "mapName", room.mapName)
 	b, stack = appendCustomRoomSettings(b, stack, room)
 	b, stack = protocol.AppendArrayStart(b, stack, "supportedModes")
-	for _, m := range matchmaker.CustomRoomModes() {
+	for _, m := range customRoomLobbyModes() {
 		b, stack = protocol.AppendUnnamedObjectStart(b, stack)
 		b = protocol.AppendStringField(b, "gameMode", m.Mode)
 		b, stack = protocol.AppendStringArrayField(b, stack, "supportedMaps", m.Maps)
