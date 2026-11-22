@@ -6846,6 +6846,23 @@ func buildMmogPurchasePayload(requestName string, playerPID string, payload []by
 		return reply("failed", "database unavailable", 0, 0)
 	}
 
+	// A credit pack (credit_packs.go): GP converted to credits. Quantity is
+	// always 1, as for every other offer; the balances are pushed after the
+	// reply (YA_RewardCurrencies ASSIGNS both), because the client itself only
+	// deducts the GP price.
+	if pack, ok := creditPackByID(itemID); ok {
+		quantity = 1
+		currency = mmogCurrencyPremium
+		charged, reason := buyCreditPack(database, pid, pack)
+		var balance int32
+		_ = database.QueryRow(`SELECT soft_currency FROM player_state WHERE user_id=?`, pid).Scan(&balance)
+		if reason != "" {
+			return reply("failed", reason, 0, balance)
+		}
+		squadHubInstance.push(pid, buildMmogRewardCurrenciesPayload(pid))
+		return reply("bought", "ok", charged, balance)
+	}
+
 	// Cosmetics. A ship cosmetic named in its per-ship form (the customizer's)
 	// is recorded as the shared item it is; one the player already owns --
 	// free, or part of an owned ship's own look -- is not sold again. Both

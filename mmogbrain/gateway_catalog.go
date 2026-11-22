@@ -78,9 +78,11 @@ func gatewayBootstrapPayload(playerID string, requestedCatalog string, playerDat
 		"starter_loadout_ids": starterLoadoutIDsForBootstrap(),
 	}
 	// Gp2CreditsConversion, Campaigns, CustomSettings and FoundersPackUrl are
-	// read by the catalog parser (0x142a34700) and were never sent. The
-	// conversion rate is the one with a visible effect: it is what the market's
-	// GP-to-credits exchange divides by, and it read 0 without this.
+	// read by the catalog parser (0x142a34700) and were never sent.
+	// CORRECTED 2026-11-22: Gp2CreditsConversion is not a rate. The client's
+	// rebuild writes that key itself, as the list of the virtual currency
+	// catalog's entity ids (the CREDIT PACKS tab, credit_packs.go), so this
+	// value is overwritten and never read. Kept only because it is harmless.
 	payload["Gp2CreditsConversion"] = gatewayGpToCreditsRate
 	payload["Campaigns"] = []any{} // rebuilt by the client from the entities' "discounts" (market_campaigns.go)
 	payload["CustomSettings"] = map[string]any{}
@@ -156,11 +158,13 @@ func gatewayRequestedCatalogCollection(playerID string, requestedCatalog string,
 	case "currency_catalog_real":
 		return gatewayCurrencyCatalogCollection(gatewayMarketEntities(gatewayCurrencyCatalogSeeds("RMT", "RMT"), playerDataReady))
 	case "currency_catalog_virtual":
-		// DN_BUNDLE_LISTING=0 sends it empty (no bundles in the Market).
+		// The GP-priced offers: the bundles (DN_BUNDLE_LISTING=0 leaves them
+		// out) and the credit packs of the CREDIT PACKS tab (credit_packs.go).
 		entities := []any{}
 		if os.Getenv("DN_BUNDLE_LISTING") != "0" {
 			entities = gatewayBundleListing(playerID, playerDataReady)
 		}
+		entities = append(entities, creditPackEntities(playerDataReady)...)
 		return map[string]any{
 			"entities":    entities,
 			"Items":       []any{},
@@ -1453,10 +1457,11 @@ func techTreeShipClass(shipID int32) int32 {
 	return 0
 }
 
-// gatewayGpToCreditsRate is the divisor the market's GP-to-credits exchange
-// uses. The client reads it as "Gp2CreditsConversion" and had nothing to read,
-// leaving the exchange at 0. No authentic rate survives in the extracted game
-// data, so this is a chosen value: 1 GP buys 250 credits.
+// gatewayGpToCreditsRate is how many credits 1 GP buys in a credit pack
+// (credit_packs.go). (It was first sent as the catalog's
+// "Gp2CreditsConversion", which the client never reads -- see
+// gatewayBootstrapPayload.) No authentic rate survives in the extracted game
+// data; the first value was a chosen 250.
 // CHANGED 2026-10-01 to the documented rate: "500 GP = 52,500 Credits"
 // (patch 1.4.1 notes, via the Dreadnought wiki), i.e. 1 GP buys 105 credits.
 const gatewayGpToCreditsRate = 105

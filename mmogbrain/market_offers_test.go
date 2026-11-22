@@ -70,7 +70,13 @@ func TestBundlesAreVirtualCurrencyCatalogOffers(t *testing.T) {
 			t.Errorf("bundle %s is in the item catalog too", seed.displayName)
 		}
 	}
-	listing := gatewayBootstrapPayload("", "currency_catalog_virtual", true)["entities"].([]any)
+	// The credit packs share the catalog (credit_packs.go).
+	var listing []any
+	for _, e := range gatewayBootstrapPayload("", "currency_catalog_virtual", true)["entities"].([]any) {
+		if e.(map[string]any)["entity_type"] == "bundle" {
+			listing = append(listing, e)
+		}
+	}
 	if len(listing) != len(marketBundles) {
 		t.Fatalf("%d bundle offers, want %d", len(listing), len(marketBundles))
 	}
