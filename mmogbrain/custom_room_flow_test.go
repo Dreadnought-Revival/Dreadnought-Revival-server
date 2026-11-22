@@ -64,10 +64,11 @@ func TestCustomRoomLobbyFlow(t *testing.T) {
 	if _, ok := handleCustomRoomRequest("YA_CustomRoomCreate", pid, create); !ok {
 		t.Fatal("create not handled")
 	}
-	change := customRoomSettingsPayload(protocol.AppendStringField(nil, "MapName", "Skybridge"),
+	// The lobby names maps by level path (customRoomWireMap).
+	change := customRoomSettingsPayload(protocol.AppendStringField(nil, "MapName", "/Game/Maps/MP/Skybridge/MP_Skybridge_P"),
 		map[int]string{0: "3.000000", 1: "1.000000"})
 	if reply, ok := handleCustomRoomRequest("YA_CustomRoomChangeSettings", pid, change); !ok ||
-		protocol.ExtractStringField(reply, "mapName") != "Skybridge" {
+		protocol.ExtractStringField(reply, "mapName") != "/Game/Maps/MP/Skybridge/MP_Skybridge_P" {
 		t.Fatalf("settings: %v %q", ok, protocol.ExtractStringField(reply, "mapName"))
 	}
 

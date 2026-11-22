@@ -671,8 +671,9 @@ func customRoomMode(mode string) string {
 // GetSelectableMaps 0x323720), but every option's LABEL comes from the
 // client's own GlobalUI asset (UYUIData::GetLoadingScreenTexts, 0x4EC800-
 // 0x4ED0BE): the mode name must equal an m_loadingScreenGameModeData key
-// (TE, TDM, PodTDM, Onslaught, HAVOC, BC, TM, TER, TurboTDM) and the map name
-// an m_multiplayerMaps m_mapName. A mode without a key gets an EMPTY label
+// (TE, TDM, PodTDM, Onslaught, HAVOC, BC, TM, TER, TurboTDM) and the map must
+// be an m_multiplayerMaps entry's LEVEL PATH (customRoomWireMap). A mode
+// without a key gets an EMPTY label
 // (the function returns fewer than 3 texts and logs "No matching game mode
 // name found under Loading Screen Game Mode Data in GlobalUI!"). The room
 // list sent until 2026-11-20 offered "Escalation", which has no key: that
@@ -716,14 +717,42 @@ func customRoomLobbyModes() []matchmaker.CustomRoomMode {
 	return out
 }
 
-// customRoomMap is a map the mode offers: the one asked for, else its first.
+// The lobby names a map by its LEVEL PATH, not its short name (verified
+// 2026-11-22, operator report "the lists open with blank rows"): the map
+// lookup in GetLoadingScreenTexts (0x4EC800) compares an FName made from the
+// string with the FName at +0x20 of each GlobalUI m_multiplayerMaps entry
+// (stride 0x70), and that field is m_mapPath. Measured by calling 0x4EC800 on
+// the loaded GlobalUI defaults in a headless client with a test DLL:
+// "Highlands" -> 0 texts (blank label) for every mode,
+// "/Game/Maps/MP/Highlands/MP_Highlands_P" -> 3 (case-insensitive, as FNames
+// are), and "ANY" -> 3, because the ANY entry's path is "ANY" -- which is why
+// the client's own CreateRoom sends MapName "ANY". Until then supportedMaps
+// and mapName carried short names, so both dropdowns listed only blank rows
+// (map labels need the map; mode labels need the selected map) and picking
+// one sent the first mode, TDM.
+
+// customRoomWireMap is the name the lobby is told for a room map: its level
+// path. A name no offered mode lists goes as it is.
+func customRoomWireMap(name string) string {
+	for _, m := range matchmaker.CustomRoomModes() {
+		for i, n := range m.Maps {
+			if n == name && i < len(m.Paths) && m.Paths[i] != "" {
+				return m.Paths[i]
+			}
+		}
+	}
+	return name
+}
+
+// customRoomMap is a map the mode offers, by its short name: the one asked
+// for (by level path, as the lobby sends it, or by name), else its first.
 func customRoomMap(mode, mapName string) string {
 	for _, m := range matchmaker.CustomRoomModes() {
 		if m.Mode != mode || len(m.Maps) == 0 {
 			continue
 		}
-		for _, name := range m.Maps {
-			if strings.EqualFold(name, mapName) {
+		for i, name := range m.Maps {
+			if strings.EqualFold(name, mapName) || i < len(m.Paths) && strings.EqualFold(m.Paths[i], mapName) {
 				return name
 			}
 		}
@@ -750,7 +779,7 @@ func buildCustomRoomSettingsPayload(responseName string, room *customRoom) []byt
 	b = protocol.AppendInt32Field(b, "Code", 0)
 	b, stack = protocol.AppendObjectEnd(b, stack)
 	b = protocol.AppendStringField(b, "gameMode", customRoomWireMode(room.mode))
-	b = protocol.AppendStringField(b, "mapName", room.mapName)
+	b = protocol.AppendStringField(b, "mapName", customRoomWireMap(room.mapName))
 	b, _ = appendCustomRoomSettings(b, stack, room)
 	return b
 }
@@ -811,13 +840,13 @@ func appendCustomRoomInfo(b []byte, stack []int, room *customRoom) ([]byte, []in
 	}
 	b, stack = protocol.AppendObjectEnd(b, stack)
 	b = protocol.AppendStringField(b, "gameMode", customRoomWireMode(room.mode))
-	b = protocol.AppendStringField(b, "mapName", room.mapName)
+	b = protocol.AppendStringField(b, "mapName", customRoomWireMap(room.mapName))
 	b, stack = appendCustomRoomSettings(b, stack, room)
 	b, stack = protocol.AppendArrayStart(b, stack, "supportedModes")
 	for _, m := range customRoomLobbyModes() {
 		b, stack = protocol.AppendUnnamedObjectStart(b, stack)
 		b = protocol.AppendStringField(b, "gameMode", m.Mode)
-		b, stack = protocol.AppendStringArrayField(b, stack, "supportedMaps", m.Maps)
+		b, stack = protocol.AppendStringArrayField(b, stack, "supportedMaps", m.Paths)
 		b, stack = protocol.AppendObjectEnd(b, stack)
 	}
 	b, stack = protocol.AppendObjectEnd(b, stack)

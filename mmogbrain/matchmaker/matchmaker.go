@@ -1408,6 +1408,9 @@ func (m *Matchmaker) StopInstance(instanceID string) error {
 type CustomRoomMode struct {
 	Mode string
 	Maps []string
+	// Paths are the Maps' level paths, index for index. The lobby names a
+	// map by its path (see custom_rooms.go, customRoomWireMap).
+	Paths []string
 }
 
 // CustomRoomModes are the modes and maps a custom room offers: the PvP queue
@@ -1415,12 +1418,13 @@ type CustomRoomMode struct {
 // plus Escalation on the TDM maps. GUESS: the original's custom room list is
 // unknown; this offers what the battle servers here can host.
 func CustomRoomModes() []CustomRoomMode {
-	names := func(maps []GameMap) []string {
-		out := make([]string, 0, len(maps))
-		for _, m := range maps {
-			out = append(out, m.Name)
+	entry := func(mode string, maps []GameMap) CustomRoomMode {
+		m := CustomRoomMode{Mode: mode, Maps: make([]string, 0, len(maps)), Paths: make([]string, 0, len(maps))}
+		for _, gm := range maps {
+			m.Maps = append(m.Maps, gm.Name)
+			m.Paths = append(m.Paths, gm.Path)
 		}
-		return out
+		return m
 	}
 	var out []CustomRoomMode
 	for _, mode := range []string{"TDM", "TE", "TER", "PodTDM", "TurboTDM", "Onslaught"} {
@@ -1428,7 +1432,7 @@ func CustomRoomModes() []CustomRoomMode {
 		if !ok {
 			maps = availableMaps
 		}
-		out = append(out, CustomRoomMode{Mode: mode, Maps: names(maps)})
+		out = append(out, entry(mode, maps))
 	}
-	return append(out, CustomRoomMode{Mode: EscalationGameMode, Maps: names(mapsByGameMode["TDM"])})
+	return append(out, entry(EscalationGameMode, mapsByGameMode["TDM"]))
 }

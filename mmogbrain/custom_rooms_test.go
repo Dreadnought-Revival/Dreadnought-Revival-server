@@ -52,7 +52,7 @@ func TestCustomRoomSettingsReplyAtRoot(t *testing.T) {
 	handleCustomRoomRequest("YA_CustomRoomCreate", pid, protocol.AppendStringField(nil, "GameMode", "TDM"))
 	defer handleCustomRoomRequest("YA_CustomRoomUserLeave", pid, nil)
 	reply, ok := handleCustomRoomRequest("YA_CustomRoomChangeSettings", pid,
-		protocol.AppendStringField(protocol.AppendStringField(nil, "GameMode", customRoomEscalationKey), "MapName", "Gorge"))
+		protocol.AppendStringField(protocol.AppendStringField(nil, "GameMode", customRoomEscalationKey), "MapName", "/Game/Maps/MP/Gorge/MP_Gorge_P"))
 	if !ok {
 		t.Fatal("settings change not handled")
 	}
@@ -65,21 +65,34 @@ func TestCustomRoomSettingsReplyAtRoot(t *testing.T) {
 	if got := customRooms.byPlayer[pid].mode; got != matchmaker.EscalationGameMode {
 		t.Errorf("room mode = %q, want Escalation behind its lobby key", got)
 	}
-	if got := protocol.ExtractStringField(reply, "mapName"); got != "Gorge" {
-		t.Errorf("mapName = %q", got)
+	// The lobby names maps by level path both ways (customRoomWireMap); the
+	// room keeps the short name the battle server is started with.
+	if got := protocol.ExtractStringField(reply, "mapName"); got != "/Game/Maps/MP/Gorge/MP_Gorge_P" {
+		t.Errorf("mapName = %q, want the level path", got)
+	}
+	if got := customRooms.byPlayer[pid].mapName; got != "Gorge" {
+		t.Errorf("room map = %q, want Gorge", got)
 	}
 }
 
-// globalUIMapNames are the m_mapName values of the client's GlobalUI
-// m_multiplayerMaps (22 entries, dumped from Generic/UI/GlobalUI.uasset with
-// tools/bpdump --props, 2026-11-20). A map name outside this list has no
-// label in the lobby's map dropdown.
-var globalUIMapNames = map[string]bool{
-	"ANY": true, "Highlands": true, "Highlands_Night": true, "Glacier": true, "Glacier_Night": true,
-	"Gorge": true, "Gorge_Night": true, "Space": true, "Space_Night": true, "Skybridge": true,
-	"Skybridge_Night": true, "Space02": true, "Space02_Night": true, "Thebe": true, "Elysium": true,
-	"Elysium_Night": true, "Tutorial": true, "Juno": true, "Space04": true, "Amirani": true,
-	"Amirani_Night": true, "Derelict": true,
+// globalUIMapPaths are the m_mapPath values of the client's GlobalUI
+// m_multiplayerMaps (22 entries, read from the loaded GlobalUI defaults in a
+// headless client, 2026-11-22). The lobby looks a map up by this path; any
+// other string gets a blank label in both dropdowns (customRoomWireMap).
+var globalUIMapPaths = map[string]bool{
+	"ANY":                                    true,
+	"/Game/Maps/MP/Highlands/MP_Highlands_P": true, "/Game/Maps/MP/Highlands/MP_Highlands_P?ylevelvariation=1": true,
+	"/Game/Maps/MP/Glacier/MP_Glacier_P": true, "/Game/Maps/MP/Glacier/MP_Glacier_P?ylevelvariation=1": true,
+	"/Game/Maps/MP/Gorge/MP_Gorge_P": true, "/Game/Maps/MP/Gorge/MP_Gorge_P?ylevelvariation=1": true,
+	"/Game/Maps/MP/Space01/MP_Space01_P": true, "/Game/Maps/MP/Space01/MP_Space01_P?ylevelvariation=1": true,
+	"/Game/Maps/MP/Skybridge/MP_Skybridge_P": true, "/Game/Maps/MP/Skybridge/MP_Skybridge_P?ylevelvariation=1": true,
+	"/Game/Maps/MP/Space02/MP_Space02_P": true, "/Game/Maps/MP/Space02/MP_Space02_P?ylevelvariation=1": true,
+	"/Game/Maps/MP/DansMap/MP_DansMap_P":   true,
+	"/Game/Maps/MP/Paradise/MP_Paradise_P": true, "/Game/Maps/MP/Paradise/MP_Paradise_P?ylevelvariation=1": true,
+	"/Game/Maps/SP/S01/E00/Quests/S01E00_00_Tutorial/S01E00_00_Tutorial_P": true,
+	"/Game/Maps/MP/Space03/MP_Space03_P":                                   true, "/Game/Maps/MP/Space04/MP_Space04_P": true,
+	"/Game/Maps/MP/Amirani/MP_Amirani_P": true, "/Game/Maps/MP/Amirani/MP_Amirani_P?ylevelvariation=1": true,
+	"/Game/Maps/MP/Derelict/MP_Derelict_P": true,
 }
 
 // Every option the lobby's two dropdowns are built from has a label in the
@@ -109,9 +122,15 @@ func TestCustomRoomLobbyOffersOnlyLabelledOptions(t *testing.T) {
 		if len(m.Maps) == 0 {
 			t.Errorf("mode %q has no maps", m.Mode)
 		}
-		for _, name := range m.Maps {
-			if !globalUIMapNames[name] {
-				t.Errorf("mode %q map %q has no GlobalUI label", m.Mode, name)
+		if len(m.Paths) != len(m.Maps) {
+			t.Errorf("mode %q: %d maps, %d paths", m.Mode, len(m.Maps), len(m.Paths))
+		}
+		for i, path := range m.Paths {
+			if !globalUIMapPaths[path] {
+				t.Errorf("mode %q map %q path %q has no GlobalUI label", m.Mode, m.Maps[i], path)
+			}
+			if got := customRoomWireMap(m.Maps[i]); got != path {
+				t.Errorf("wire map for %q = %q, want %q", m.Maps[i], got, path)
 			}
 		}
 	}
@@ -139,5 +158,22 @@ func TestCustomRoomTeamAIFlagsAreCanonical(t *testing.T) {
 	}
 	if ai := [2]bool{customRoomSettingInt(customRooms.byPlayer[pid], 1, 0) != 0, customRoomSettingInt(customRooms.byPlayer[pid], 2, 0) != 0}; ai != [2]bool{true, false} {
 		t.Errorf("room AI flags %v", ai)
+	}
+}
+
+// The room reply lists every map by level path, the form the lobby labels.
+func TestCustomRoomReplySendsMapPaths(t *testing.T) {
+	pid := "c0570000000000000000000000000009"
+	req := protocol.AppendStringField(protocol.AppendStringField(nil, "GameMode", "Onslaught"), "MapName", "ANY")
+	reply, ok := handleCustomRoomRequest("YA_CustomRoomCreate", pid, req)
+	if !ok {
+		t.Fatal("create not handled")
+	}
+	defer handleCustomRoomRequest("YA_CustomRoomUserLeave", pid, nil)
+	if !bytes.Contains(reply, []byte("/Game/Maps/MP/Highlands/MP_Highlands_P")) {
+		t.Error("reply lacks the Highlands level path")
+	}
+	if got := customRooms.byPlayer[pid].mapName; got != "Highlands" {
+		t.Errorf("room map = %q, want Highlands (the client asks for ANY)", got)
 	}
 }
