@@ -88,3 +88,27 @@ func TestCreditPackPurchase(t *testing.T) {
 		t.Errorf("%d purchase rows for a credit pack, want 0", n)
 	}
 }
+
+// No entity of the virtual currency catalog -- the CREDIT PACKS tab lists
+// them all -- has an empty "currency" array: the tile list copies element 0
+// unchecked and an empty array crashed the client (minidumps 2026-11-23,
+// DreadGame-Win64-Shipping.exe+0x332CD6 called from +0xAB300B).
+func TestNoEmptyCurrencyArrayInTheCreditPacksTab(t *testing.T) {
+	catalog := gatewayRequestedCatalogCollection("", "currency_catalog_virtual", true)
+	entities, _ := catalog["entities"].([]any)
+	if len(entities) == 0 {
+		t.Fatal("empty catalog")
+	}
+	for _, e := range entities {
+		entity := e.(map[string]any)
+		if cur, isArray := entity["currency"].([]any); isArray {
+			if len(cur) == 0 {
+				t.Errorf("entity %v (%v) has an empty currency array", entity["entity_id"], entity["entity_type"])
+				continue
+			}
+			if _, ok := cur[0].(map[string]any); !ok {
+				t.Errorf("entity %v: currency[0] is %T, want an object", entity["entity_id"], cur[0])
+			}
+		}
+	}
+}

@@ -92,8 +92,10 @@ func TestBundlesAreVirtualCurrencyCatalogOffers(t *testing.T) {
 		if id, err := strconv.ParseInt(offer["entity_id"].(string), 10, 32); err != nil || id <= 0 {
 			t.Errorf("bundle offer id %v does not fit an int32", offer["entity_id"])
 		}
-		if _, ok := offer["currency"].([]any); !ok {
-			t.Errorf("bundle offer %v lacks its currency array", offer["external_id"])
+		// Never empty: the CREDIT PACKS tile list reads element 0 of it
+		// unchecked (gatewayMarketEntity; the 2026-11-23 Market crash).
+		if cur, ok := offer["currency"].([]any); !ok || len(cur) == 0 {
+			t.Errorf("bundle offer %v: currency %v, want a non-empty array", offer["external_id"], offer["currency"])
 		}
 		// The bundle converter takes the contents from items[].external_id.
 		if items, _ := offer["items"].([]any); len(items) == 0 {

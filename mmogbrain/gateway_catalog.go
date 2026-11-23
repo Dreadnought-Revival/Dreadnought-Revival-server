@@ -1258,12 +1258,19 @@ func gatewayMarketEntity(seed gatewayCatalogEntitySeed, playerDataReady bool) ma
 	// into ProvidedCredits ("CR") and ProvidedPoints ("SP"/"GP"); without it the
 	// client logged "Field currency was not found" for every bundle. GP is
 	// never listed: a bundle here grants none (see marketBundles).
+	//
+	// The array is NEVER empty. The Market's CREDIT PACKS tile list
+	// (0x140AB2CEB-0x140AB3195) lists every GP-priced entity of this catalog,
+	// bundles included, and when "currency" is an array (tree type 6,
+	// checked at 0x140AB2FF8) it copies element 0 (0x140AB300B ->
+	// 0x140332CC0) without checking the count: an empty array is a read of
+	// address 0. Verified from three uploaded minidumps (2026-11-23, 3/3 the
+	// same: EXCEPTION_ACCESS_VIOLATION at +0x332CD6, return address
+	// +0xAB3010), the hangar crash of 2026-11-20..23 when opening the
+	// Market's currency section. A bundle without credits lists 0 credits,
+	// the value the converter derived from the empty array anyway.
 	if seed.entityType == "bundle" {
-		included := []any{}
-		if seed.providedCredits > 0 {
-			included = append(included, map[string]any{"amount": seed.providedCredits, "currency_type": "CR"})
-		}
-		entity["currency"] = included
+		entity["currency"] = []any{map[string]any{"amount": seed.providedCredits, "currency_type": "CR"}}
 	}
 	if seed.grantedCurrency != "" {
 		entity["granted_currency_id"] = seed.grantedCurrency
