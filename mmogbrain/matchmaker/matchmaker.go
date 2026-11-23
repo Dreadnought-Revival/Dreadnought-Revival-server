@@ -1372,9 +1372,19 @@ func battleServerIPv4(host string, log *logrus.Logger) string {
 // around the players (a proving-ground host filled T1 with 7 bots + the player
 // and T2 with 8), so a second human on team 2 would fight the first. PvP modes
 // alternate 1, 2.
+//
+// Onslaught is PvP (fixed 2026-11-23; it was listed as co-op on 2026-09-27,
+// a guess "not yet verified live"): two teams of players, each with its own
+// AI ships. Evidence: GameState_Onslaught_BP scores a PLAYER kill (7 points)
+// beside the creep kills; every creep spawn point carries a team
+// (YCreepNavigationSpawn m_spawnTeam +0x430) and the creep caps are per team
+// (GameInfo_Onslaught_BP smallMax 12 per team); YGameMode_Invasion's parent is
+// the TDM game mode; the client's game-mode row is 5 a side like TDM
+// (clientGameModeConfigs). With every human on team 1, the players of a 4-
+// and a 5-player Onslaught on 2026-11-23 all played on one side.
 func matchTeam(gameMode string, i int) int {
 	switch gameMode {
-	case "BC", "Onslaught", "TM", PvEGameMode, HavocGameMode:
+	case "BC", "TM", PvEGameMode, HavocGameMode:
 		return 1
 	}
 	return i%2 + 1

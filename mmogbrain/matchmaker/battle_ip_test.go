@@ -16,6 +16,9 @@ func TestBattleServerAddressIsResolvedToIPv4(t *testing.T) {
 	}
 }
 
+// Onslaught alternates like TDM since 2026-11-23: it was co-op here (a
+// 2026-09-27 guess), but the mode is two teams of players, each with its own
+// AI ships (matchTeam).
 func TestMatchTeams(t *testing.T) {
 	for _, c := range []struct {
 		mode string
@@ -23,7 +26,7 @@ func TestMatchTeams(t *testing.T) {
 		want int
 	}{
 		{"TDM", 0, 1}, {"TDM", 1, 2}, {"TDM", 2, 1},
-		{"BC", 0, 1}, {"BC", 1, 1}, {"Onslaught", 3, 1}, {"TM", 1, 1},
+		{"BC", 0, 1}, {"BC", 1, 1}, {"Onslaught", 3, 2}, {"TM", 1, 1},
 	} {
 		if got := matchTeam(c.mode, c.i); got != c.want {
 			t.Errorf("matchTeam(%s, %d) = %d, want %d", c.mode, c.i, got, c.want)

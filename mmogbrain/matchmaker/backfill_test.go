@@ -173,27 +173,45 @@ func TestBackfillSkipsAMatchWithAResult(t *testing.T) {
 // PvP queues always tell the battle server their team size (the host's own
 // is 8 a side, so a 5-human TDM ran 8 against 8); co-op queues only when set.
 func TestHostTeamSize(t *testing.T) {
-	for _, q := range []string{"TDM", "PodTDM", "TE", "TER", "Territory"} {
+	for _, q := range []string{"TDM", "PodTDM", "TE", "TER", "Territory", "Onslaught"} {
 		if size, max := HostTeamSize(q); size != 5 || max != 10 {
 			t.Errorf("%s: %d/%d, want 5/10 (the original 5 against 5)", q, size, max)
 		}
 	}
-	for _, q := range []string{"Onslaught", "BC", "TM", PvEGameMode, HavocGameMode} {
+	for _, q := range []string{"BC", "TM", PvEGameMode, HavocGameMode} {
 		if size, max := HostTeamSize(q); size != 0 || max != 0 {
 			t.Errorf("%s (co-op, default): %d/%d, want 0/0 (host keeps its own)", q, size, max)
 		}
 	}
 	n := 7
-	SetTeamSizeOverride("Onslaught", &n)
-	defer SetTeamSizeOverride("Onslaught", nil)
-	if size, max := HostTeamSize("Onslaught"); size != 7 || max != 7 {
-		t.Errorf("Onslaught set to 7: %d/%d, want 7/7", size, max)
+	SetTeamSizeOverride("BC", &n)
+	defer SetTeamSizeOverride("BC", nil)
+	if size, max := HostTeamSize("BC"); size != 7 || max != 7 {
+		t.Errorf("BC set to 7: %d/%d, want 7/7", size, max)
 	}
 	n3 := 3
 	SetTeamSizeOverride("TDM", &n3)
 	defer SetTeamSizeOverride("TDM", nil)
 	if size, max := HostTeamSize("TDM"); size != 3 || max != 6 {
 		t.Errorf("TDM set to 3: %d/%d, want 3/6", size, max)
+	}
+}
+
+// Onslaught is two teams of players (each with its own AI ships), so its
+// players alternate sides like TDM; the co-op modes keep every human on team 1.
+func TestOnslaughtPlayersSplitIntoTwoTeams(t *testing.T) {
+	if TeamsIn("Onslaught") != 2 {
+		t.Fatalf("Onslaught: %d teams, want 2", TeamsIn("Onslaught"))
+	}
+	for i, want := range []int{1, 2, 1, 2, 1} {
+		if got := matchTeam("Onslaught", i); got != want {
+			t.Errorf("Onslaught player %d: team %d, want %d", i, got, want)
+		}
+	}
+	for _, q := range []string{"BC", "TM", PvEGameMode, HavocGameMode} {
+		if TeamsIn(q) != 1 || matchTeam(q, 1) != 1 {
+			t.Errorf("%s: want one team of humans", q)
+		}
 	}
 }
 
