@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -150,7 +151,11 @@ func (loadout mmogShipLoadoutSeed) displayInfo() string {
 	// the ship they got back. Only its EMPTY emblem/paint/pattern/decal
 	// groups are filled from the default (repairedShipDisplayInfo).
 	if info := strings.TrimSpace(loadout.savedDisplayInfo); info != "" {
-		return repairedShipDisplayInfo(info, loadout.repairDefaultDisplayInfo)
+		info = repairedShipDisplayInfo(info, loadout.repairDefaultDisplayInfo)
+		if hull, ok := loadout.hullLine(); ok {
+			info = repairedShipMesh(info, eyShipClassByKey[hull], loadout.repairDefaultDisplayInfo)
+		}
+		return info
 	}
 	return loadout.computedDisplayInfo()
 }
@@ -209,7 +214,8 @@ func (loadout mmogShipLoadoutSeed) repairDefaultDisplayInfo() string {
 // call stack warning EVERY FRAME (thousands per client log).
 //
 // Rules: a non-empty group is the player's choice and is never touched; the
-// mesh group (first) is never touched; a string that is not exactly five
+// mesh group (first) is never touched here (a hull part that cannot fit the
+// ship is replaced by repairedShipMesh); a string that is not exactly five
 // groups is returned as is (the client's importer would reject it anyway);
 // "" (what the client exports), "-1" and "0" (the empty slot spellings
 // unownedAppearanceItems uses) are empty. When the default has no value for a
@@ -246,6 +252,148 @@ func repairedShipDisplayInfo(saved string, computed func() string) string {
 			groups[i] = strings.TrimSpace(defaults[i])
 		}
 	}
+	return strings.Join(groups, ";")
+}
+
+// hullLine is the ship's hull line ("SniperLight"): from its item id, else,
+// for a ship whose id resolves to no asset (the tier-4 hulls), from the roster
+// (baseShipLoadouts), as repairDefaultDisplayInfo does.
+func (loadout mmogShipLoadoutSeed) hullLine() (string, bool) {
+	if h, ok := shipHullLine(loadout.ship.id); ok {
+		return h, true
+	}
+	for _, b := range baseShipLoadouts {
+		if b.loadoutID == loadout.precastLoadoutID {
+			return b.hullLine, true
+		}
+	}
+	return "", false
+}
+
+// shipMeshPartWrongClass reports a hull part (category 20, any form) that
+// cannot fit a ship of EYShipClass class (shipVanityClasses). The ship's own
+// class decides, not the class byte inside the saved id: a real client save
+// of an Agosta (AssaultMedium, 14) carried its parts with byte 5
+// (update_ship_loadout_test.go, 2026-08-02). An unknown id or a part that fits
+// every ship is not judged.
+func shipMeshPartWrongClass(field string, class int32) bool {
+	v, err := strconv.ParseInt(strings.TrimSpace(field), 10, 32)
+	if err != nil || v <= 0 || (v>>24)&0xff != 20 {
+		return false
+	}
+	item, ok := dreadconfig.VanityItemByID(sharedGearID(int32(v)))
+	if !ok {
+		return false
+	}
+	fits := shipVanityClasses(item)
+	return fits != nil && !slices.Contains(fits, class)
+}
+
+// shipMeshSlot is the hull slot a part fills, from its asset name: the four
+// mesh slots are bridge (some hulls call it Quarterdeck, one asset spells it
+// "Quaterdeck"), forecastle (figureheads replace it: VAN_FH_*, *_FH_*), hull
+// and stern. "" when the name says none.
+func shipMeshSlot(id int32) string {
+	item, ok := dreadconfig.VanityItemByID(sharedGearID(id))
+	if !ok {
+		return ""
+	}
+	if strings.HasPrefix(item.Name, "VAN_FH_") {
+		return "forecastle"
+	}
+	for _, tok := range strings.Split(item.Name, "_") {
+		switch tok {
+		case "Bridge", "Quarterdeck", "Quaterdeck":
+			return "bridge"
+		case "Forecastle", "FH":
+			return "forecastle"
+		case "Hull":
+			return "hull"
+		case "Stern":
+			return "stern"
+		}
+	}
+	return ""
+}
+
+// repairedShipMesh replaces, in a saved appearance, each hull part that cannot
+// fit a ship of EYShipClass class with the part of the ship's default mesh
+// group (computed) for the slot left empty: the default part whose slot no
+// kept part fills. The player's other parts stay. When the slots cannot be
+// told apart (a name without a slot word, a default group without a free
+// one), the whole group becomes the default rather than keep a part the hull
+// cannot show; with no usable default the string is returned as is.
+//
+// Added 2026-11-23 for the Titan parts (heroPartSetHullLine): 19 Dreadnought
+// Medium parts were fitted on 9 ships of six other classes; of 1,931 saved
+// appearances nothing else was caught. Like repairedShipDisplayInfo this
+// happens on every read; the stored row is replaced when the client next saves
+// the string it was sent.
+func repairedShipMesh(info string, class int32, computed func() string) string {
+	groups := strings.Split(info, ";")
+	if len(groups) != 5 {
+		return info
+	}
+	fields := strings.Split(groups[0], "#")
+	var wrong []int
+	for i, f := range fields {
+		if shipMeshPartWrongClass(f, class) {
+			wrong = append(wrong, i)
+		}
+	}
+	if len(wrong) == 0 {
+		return info
+	}
+	def := strings.Split(computed(), ";")
+	if len(def) != 5 {
+		return info
+	}
+	defFields := strings.Split(def[0], "#")
+	defSlots := make([]string, len(defFields))
+	for i, f := range defFields {
+		v, err := strconv.ParseInt(strings.TrimSpace(f), 10, 32)
+		if err != nil || v <= 0 {
+			return info // no usable default: leave it as it was
+		}
+		defSlots[i] = shipMeshSlot(int32(v))
+	}
+	whole := func() string {
+		groups[0] = strings.TrimSpace(def[0])
+		return strings.Join(groups, ";")
+	}
+	kept := map[string]bool{}
+	for i, f := range fields {
+		if slices.Contains(wrong, i) {
+			continue
+		}
+		v, err := strconv.ParseInt(strings.TrimSpace(f), 10, 32)
+		if err != nil || v <= 0 {
+			continue
+		}
+		slot := shipMeshSlot(int32(v))
+		if slot == "" {
+			return whole()
+		}
+		kept[slot] = true
+	}
+	for _, i := range wrong {
+		replaced := false
+		for j, slot := range defSlots {
+			if slot == "" {
+				return whole()
+			}
+			if !kept[slot] {
+				fields[i] = strings.TrimSpace(defFields[j])
+				kept[slot] = true
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			return whole()
+		}
+	}
+	groups[0] = strings.Join(fields, "#")
 	return strings.Join(groups, ";")
 }
 

@@ -157,9 +157,16 @@ func TestRepairedAppearanceForEveryBaseShip(t *testing.T) {
 			}
 			got := repairGroups(t, l.displayInfo())
 			want := repairGroups(t, l.repairDefaultDisplayInfo())
+			// repairMesh is Medium Assault parts: an AssaultMedium ship keeps
+			// them (the player's choice); any other hull cannot show them and
+			// gets its own default parts (repairedShipMesh, since 2026-11-23;
+			// this test used to assert every hull kept them).
 			wantMesh := strings.Split(saved, ";")[0]
+			if hull, _ := l.hullLine(); hull != "AssaultMedium" && wantMesh != "" {
+				wantMesh = want[0]
+			}
 			if got[0] != wantMesh {
-				t.Errorf("%s: mesh group changed to %q", b.name, got[0])
+				t.Errorf("%s: mesh group = %q, want %q", b.name, got[0], wantMesh)
 			}
 			for i := 1; i < 5; i++ {
 				if got[i] != want[i] || got[i] == "" || got[i] == "-1" {

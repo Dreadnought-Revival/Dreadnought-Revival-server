@@ -39,10 +39,11 @@ func TestShipVanityClasses(t *testing.T) {
 		}
 	}
 	// Every hull-specific one resolves: of the ship cosmetics only the
-	// emblems, paints, decals, shared patterns and the NPC Titan's three
-	// parts fit "every ship".
+	// emblems, paints, decals and shared patterns fit "every ship". (The
+	// Titan parts were excepted here as "the NPC Titan's" until 2026-11-23;
+	// they are a Dreadnought Medium hero set, heroPartSetHullLine.)
 	for _, v := range dreadconfig.VanityItems() {
-		if v.Category() == 20 && shipVanityClasses(v) == nil && !strings.Contains(v.File, "/Titan/") {
+		if v.Category() == 20 && shipVanityClasses(v) == nil {
 			t.Errorf("mesh part %s fits no class", v.Name)
 		}
 	}

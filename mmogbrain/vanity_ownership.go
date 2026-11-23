@@ -38,13 +38,31 @@ import (
 // ship's blueprint look); clientVanityItemIDs adds each ship cosmetic's
 // per-ship forms for the classes it fits.
 
+// heroPartSetHullLine: hero part sets filed under Heroships/<Name>/ instead of
+// Heroships/<Type>/<Size>/, by the hull their meshes are built on.
+//
+// Titan (fixed 2026-11-23): "Titan's Bridge/Hull/Stern" (352256197-9). All
+// three meshes (VAN_H_Titan_{Bridge,Hull,Details}_SK) are skinned to
+// /Game/Generic/Ships/Dreadnought/Medium/VH_DreadM_SKEL, so they fit the
+// Dreadnought Medium line only. No hero loadout uses them (the DreadM heroes
+// Morningstar, Ravenswood and Zilant wear their own four-part sets) and the set
+// has no forecastle: a hero that was never released (GUESS). This returned nil
+// before, so they were sold, owned and fitted as if they fitted every ship: 32
+// purchases, and 19 parts on 9 ships of six other classes by 2026-11-23, none
+// a Dreadnought Medium (repairedShipMesh puts those back). Not the PvE
+// Titan Carrier, which has its own skeleton (VH_Titan_SKEL).
+var heroPartSetHullLine = map[string]string{
+	"Titan": "DreadnoughtMedium",
+}
+
 var figureheadNamePattern = regexp.MustCompile(`^VAN_FH_(Assault|Dread|Scout|Sniper|Support)([LMH])_`)
 
 // shipVanityClasses is the EYShipClasses a ship cosmetic fits, from its asset
 // folder: Heroships|ThemedShips/<Type>/<Size>/... and Patterns/<Type>/<Size>/...
 // name one hull line; a figurehead (Heroships/<Type>/Figureheads/...) names its
-// size in the asset name. nil: it fits every ship (emblems, paints, decals,
-// shared patterns).
+// size in the asset name. A hero part set in a folder of its own
+// (heroPartSetHullLine) fits the hull its meshes are built on. nil: it fits
+// every ship (emblems, paints, decals, shared patterns).
 func shipVanityClasses(v dreadconfig.VanityItem) []int32 {
 	_, rest, ok := strings.Cut(v.File, "/VanityItems/")
 	if !ok {
@@ -58,6 +76,11 @@ func shipVanityClasses(v dreadconfig.VanityItem) []int32 {
 	case "Heroships", "ThemedShips", "Patterns":
 	default:
 		return nil
+	}
+	if parts[0] == "Heroships" {
+		if hull, ok := heroPartSetHullLine[parts[1]]; ok {
+			return []int32{eyShipClassByKey[hull]}
+		}
 	}
 	typ := parts[1]
 	if typ == "Dread" {
