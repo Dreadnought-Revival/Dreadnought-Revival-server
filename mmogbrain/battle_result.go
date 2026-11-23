@@ -484,11 +484,11 @@ func battleResultHandler(w http.ResponseWriter, r *http.Request) {
 	// paid. See rewardPools.
 	pools := rewards.poolsFor(res.outcome, res.kills, fleetType)
 	flown := flownFleetShipIDs(res.pid, res.ships)
-	shipPools := pools.shipXP
-	if len(flown) > 1 {
-		for i := range shipPools {
-			shipPools[i] /= int32(len(flown))
-		}
+	shipPools := perFlownShipPools(pools.shipXP, len(flown))
+	hero := matchHeroRewards(res.pid, res.ships, fleetType, pools.shipXP)
+	if len(hero.order) > 0 {
+		logrus.WithFields(logrus.Fields{"match": match, "player": pid, "heroes": hero.order,
+			"flown_heroes": len(hero.ship), "free_xp": hero.freeXP}).Info("battle result: hero ship bonus")
 	}
 	// credit_pools are in EYCreditsPoolType order, xp_pools (the screen's
 	// FREE XP, m_matchXPInfo.m_freeXP) and the ship pools in EYXPPoolType
@@ -504,6 +504,11 @@ func battleResultHandler(w http.ResponseWriter, r *http.Request) {
 	// is listed, and shows the elite allies by name ("Includes Elite Bonus
 	// from {0}"). The original server build sent both; nothing in this exe
 	// does (2026-11-14).
+	// hero_ship_xp_pools / hero_free_xp_pools ("id:p0,...,p12;..."): a flown
+	// hero's ship XP list (its 70%) and every earning hero's free XP list,
+	// which the mod writes into that ship's YMatchShipXP instead of the
+	// match's ship_xp_pools and zeros (hero_ship_bonus.go).
+	_, _ = fmt.Fprintf(w, "hero_ship_xp_pools=%s\nhero_free_xp_pools=%s\n", hero.listsCSV(hero.ship), hero.listsCSV(hero.free))
 	_, _ = fmt.Fprintf(w, "booster_ids=%s\nelite_share=%s\n",
 		joinInt32s(rewards.activeBoosterIDs(res.outcome, fleetType)), strings.Join(eliteShare, ","))
 }
@@ -538,10 +543,22 @@ func recordBattleResult(res battleResult, rewards battleRewards) (credits, xp in
 	ships := flownShipIDs(res.pid, res.ships)
 	unplayed := unplayedFleetPawnIDs(res.pid, res.fleetType, ships)
 	unplayedXP := rewards.unplayedShipPools(res.outcome, res.fleetType).total()
+	// Hero ships (hero_ship_bonus.go): a flown hero keeps 70% of its share
+	// as ship XP, and every hero of the fleet adds free XP -- the same lists
+	// the end-of-match screen is sent.
+	hero := matchHeroRewards(res.pid, res.ships, res.fleetType, pools.shipXP)
+	heroShipXP := map[int32]int32{}
+	for pawn, key := range flownHeroPawns(res.pid, res.ships) {
+		heroShipXP[pawn] = hero.ship[key].total()
+	}
 
 	gains = map[int32]int32{}
 	if len(ships) > 0 {
 		for _, ship := range ships {
+			if v, ok := heroShipXP[ship]; ok {
+				gains[ship] += v
+				continue
+			}
 			gains[ship] += xp / int32(len(ships))
 		}
 	}
@@ -562,7 +579,7 @@ func recordBattleResult(res battleResult, rewards battleRewards) (credits, xp in
 	if n, _ := ins.RowsAffected(); n == 0 {
 		return credits, xp, nil, false, nil // already paid
 	}
-	if err := grantBattleRewards(tx, res.pid, credits, rankXP(pools.shipXP), xp, pools.freeXP.total(), ships, unplayed, unplayedXP); err != nil {
+	if err := grantBattleRewards(tx, res.pid, credits, rankXP(pools.shipXP), xp, pools.freeXP.total()+hero.freeXP, ships, heroShipXP, unplayed, unplayedXP); err != nil {
 		return 0, 0, nil, false, err
 	}
 	return credits, xp, gains, true, tx.Commit()
@@ -807,7 +824,9 @@ func joinInt32s(v []int32) string {
 // grantBattleRewards pays a result: credits, rank XP (gained), ship XP xp
 // split over the ships flown, free XP, and unplayedXP to each unflown fleet
 // ship.
-func grantBattleRewards(tx *sql.Tx, pid string, credits, gained, xp, freeXP int32, ships, unplayed []int32, unplayedXP int32) error {
+// heroShipXP: what a flown hero ship (by pawn id) earns instead of the even
+// share (hero_ship_bonus.go).
+func grantBattleRewards(tx *sql.Tx, pid string, credits, gained, xp, freeXP int32, ships []int32, heroShipXP map[int32]int32, unplayed []int32, unplayedXP int32) error {
 	var currentXP, rank, rankXP int32
 	if err := tx.QueryRow(`SELECT current_xp, current_rank, rank_xp FROM player_state WHERE user_id=?`, pid).
 		Scan(&currentXP, &rank, &rankXP); err != nil {
@@ -839,7 +858,11 @@ func grantBattleRewards(tx *sql.Tx, pid string, credits, gained, xp, freeXP int3
 	if len(ships) > 0 {
 		share := xp / int32(len(ships))
 		for _, ship := range ships {
-			if err := addShipXP(ship, share); err != nil {
+			amount := share
+			if v, ok := heroShipXP[ship]; ok {
+				amount = v
+			}
+			if err := addShipXP(ship, amount); err != nil {
 				return err
 			}
 		}

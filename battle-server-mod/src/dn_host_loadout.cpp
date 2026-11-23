@@ -5198,7 +5198,9 @@ static bool TakeEventTotals(void *pri, int64_t *xp, int64_t *credits, int *event
 static void TakeFairPlayChecks(const char *pid, uint8_t *pc, uint8_t *pri, char *path, size_t pathLen);
 
 static void ReportMatchResult(void *orbitComp) {
-  char pid[80], match[96], path[3584], body[4096];
+  // body: 8 KB since 2026-11-24 -- the hero lists (hero_*_xp_pools) come on
+  // top of a fleet of up to 64 ids and the elite allies' names.
+  char pid[80], match[96], path[3584], body[8192];
   uint8_t *priOut = nullptr, *pcOut = nullptr;
   int kills = 0, deaths = 0, assists = 0, team = 0, result = 0, score = 0;
   const char *teamSource = "none";
@@ -5508,6 +5510,49 @@ static void SendBoosterRPCs(uint8_t *pri, const char *body) {
   }
 }
 
+// Hero ship lists (added 2026-11-24). mmogbrain sends, as
+// "id:p0,...,p12;id:...", hero_ship_xp_pools (a flown hero's ship XP: its 70%)
+// and hero_free_xp_pools (every earning hero's free XP: its 30% and the
+// FreeXPFleetBonus pools 10/11). The client's rewards screen reads a hero's
+// FREE list (GatherEomReward 0x340C40: a fleet ship whose id is a hero
+// loadout, 0x547970, is shown from m_freeXp, and that list's total + pools 10
+// and 11 go to the match's free XP), so all-zero lists showed the hero bonus
+// as nothing. See mmogbrain hero_ship_bonus.go.
+#define MAX_HERO_LISTS 16
+struct HeroPools {
+  int n;
+  int32_t id[MAX_HERO_LISTS];
+  int32_t pools[MAX_HERO_LISTS][REWARD_POOLS];
+};
+
+static void ParseHeroPools(const char *body, const char *key, HeroPools *out) {
+  static char v[4096];
+  out->n = 0;
+  if (!FieldValue(body, key, v, sizeof(v)) || !v[0])
+    return;
+  for (char *c = v; c && *c && out->n < MAX_HERO_LISTS;) {
+    char *next = strchr(c, ';');
+    if (next)
+      *next++ = 0;
+    char *colon = strchr(c, ':');
+    if (colon) {
+      int i = out->n;
+      out->id[i] = (int32_t)strtol(c, nullptr, 10);
+      memset(out->pools[i], 0, sizeof(out->pools[i]));
+      if (out->id[i] != 0 && ParseInts(colon + 1, out->pools[i], REWARD_POOLS) == REWARD_POOLS)
+        out->n++;
+    }
+    c = next;
+  }
+}
+
+static int32_t *HeroPoolsFor(HeroPools *h, int32_t id) {
+  for (int i = 0; i < h->n; ++i)
+    if (h->id[i] == id)
+      return h->pools[i];
+  return nullptr;
+}
+
 static void WriteEomRewards(uint8_t *pri, const char *body, const char *match) {
   char v[1024];
   int32_t credits[REWARD_POOLS] = {}, xp[REWARD_POOLS] = {}, shipXp[REWARD_POOLS] = {};
@@ -5534,6 +5579,10 @@ static void WriteEomRewards(uint8_t *pri, const char *body, const char *match) {
            "report ShipXpError for the rest", listed, MAX_FLEET_SHIPS);
   }
   int nFlown = ParseInts(FieldValue(body, "flown_ships", v, sizeof(v)), flown, MAX_FLEET_SHIPS);
+  static HeroPools heroShip, heroFree;
+  ParseHeroPools(body, "hero_ship_xp_pools", &heroShip);
+  ParseHeroPools(body, "hero_free_xp_pools", &heroFree);
+  int heroShipWritten = 0, heroFreeWritten = 0;
 
   wchar_t wmatch[96];
   int ml = MultiByteToWideChar(CP_UTF8, 0, match, -1, wmatch, 96);
@@ -5575,8 +5624,21 @@ static void WriteEomRewards(uint8_t *pri, const char *body, const char *match) {
         bool wasFlown = false;
         for (int j = 0; j < nFlown; ++j)
           wasFlown |= flown[j] == fleet[i];
-        tarr(e + 0x08, wasFlown ? &shipArr : &unplayedArr); // m_shipXp
-        tarr(e + 0x18, &zeroArr);                        // m_freeXp
+        int32_t *hs = HeroPoolsFor(&heroShip, fleet[i]), *hf = HeroPoolsFor(&heroFree, fleet[i]);
+        TArrayIntMin heroShipArr = {hs, REWARD_POOLS, REWARD_POOLS};
+        TArrayIntMin heroFreeArr = {hf, REWARD_POOLS, REWARD_POOLS};
+        if (wasFlown && hs) {
+          tarr(e + 0x08, &heroShipArr); // m_shipXp: a flown hero's 70%
+          heroShipWritten++;
+        } else {
+          tarr(e + 0x08, wasFlown ? &shipArr : &unplayedArr); // m_shipXp
+        }
+        if (hf) {
+          tarr(e + 0x18, &heroFreeArr); // m_freeXp: a hero's free XP and fleet bonus
+          heroFreeWritten++;
+        } else {
+          tarr(e + 0x18, &zeroArr); // m_freeXp
+        }
       }
     }
     // The previous (empty) array is not freed: it has nothing to free.
@@ -5614,8 +5676,10 @@ static void WriteEomRewards(uint8_t *pri, const char *body, const char *match) {
   SendBoosterRPCs(pri, body);
   int pushed = PushActorNow(pri);
   Logf("eom rewards: PRI %p written -- scoring pool credits %d xp %d, %d fleet ships "
-       "(%d flown, unplayed share %d), both finalized; PRI pushed %d (FlushNetDormancy + ForceNetUpdate)",
-       pri, credits[0], xp[0], nFleet, nFlown, haveUnplayed ? unplayed[0] : 0, pushed);
+       "(%d flown, unplayed share %d), hero lists ship %d/%d free %d/%d, both finalized; PRI pushed %d "
+       "(FlushNetDormancy + ForceNetUpdate)",
+       pri, credits[0], xp[0], nFleet, nFlown, haveUnplayed ? unplayed[0] : 0, heroShipWritten, heroShip.n,
+       heroFreeWritten, heroFree.n, pushed);
 }
 
 // ---------------------------------------------------------------------------
