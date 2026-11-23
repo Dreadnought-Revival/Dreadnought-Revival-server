@@ -443,7 +443,10 @@ func configureMatchAutoscale(mm *matchmaker.Matchmaker, log *logrus.Logger) {
 	// mode and fleet before starting a new one. DN_MATCH_BACKFILL_WINDOW is
 	// how young the match must be (default 3m, GUESS; 0 = off) and
 	// DN_MATCH_BACKFILL_MODES which modes take late joiners (default
-	// TDM,Onslaught,BC: the modes where mid-match joins were seen to work).
+	// TDM,Onslaught,BC: the modes where mid-match joins were seen to work;
+	// TurboTDM since 2026-11-23, operator: a TDM host plus the mod's three
+	// feats, which it adds in every ship's feats-component setup, so a late
+	// joiner's ship gets them too -- GUESS until a Turbo late join is seen).
 	// It was off from 2026-10-03 to 2026-11-15: a late joiner gets no ship
 	// selection, the host spawns the active loadout at once, and it had
 	// none until the mod's flagship drop-in.
@@ -451,7 +454,7 @@ func configureMatchAutoscale(mm *matchmaker.Matchmaker, log *logrus.Logger) {
 	if v, err := time.ParseDuration(os.Getenv("DN_MATCH_BACKFILL_WINDOW")); err == nil && v >= 0 {
 		mm.BackfillWindow = v
 	}
-	modes := "TDM,Onslaught,BC"
+	modes := "TDM,Onslaught,BC,TurboTDM"
 	if v, ok := os.LookupEnv("DN_MATCH_BACKFILL_MODES"); ok {
 		modes = v
 	}
