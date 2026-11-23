@@ -235,6 +235,9 @@ func TestQueueStartedAnnouncement(t *testing.T) {
 	if !noPush(pushes, 200*time.Millisecond) {
 		t.Error("announced a solo mode")
 	}
+	if got := serverChatQueueLine("TurboTDM", 2, 1); got != "A player is searching for a Veteran Turbo TDM match. Queue with your Veteran fleet now to play together!" {
+		t.Errorf("Turbo TDM line: %q", got)
+	}
 	if got := serverChatQueueLine("TE", 3, 3); got != "A squad of 3 is searching for a Legendary Team Elimination match. Queue with your Legendary fleet now to play together!" {
 		t.Errorf("squad line %q", got)
 	}

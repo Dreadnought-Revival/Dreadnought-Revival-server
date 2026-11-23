@@ -229,8 +229,11 @@ var serverChatModeNames = map[string]string{
 	"TDM": "Team Deathmatch",
 	// Ceres Awakens: the client's own name for PodTDM (GlobalUI
 	// UI_GameMode_CeresWakes; played on Space02 "Ryugu Haven", buff pods).
-	"PodTDM":    "Ceres Awakens",
-	"TurboTDM":  "Team Deathmatch",
+	"PodTDM": "Ceres Awakens",
+	// Turbo TDM: the client's own menu name (GlobalUI, the UI_Turbo_TDM game
+	// mode entry: "Turbo TDM", "Objective: Turbocharged Team Deathmatch").
+	// It was announced as "Team Deathmatch" until 2026-11-23 (operator report).
+	"TurboTDM":  "Turbo TDM",
 	"TE":        "Team Elimination",
 	"TER":       "Conquest",
 	"Territory": "Conquest",
