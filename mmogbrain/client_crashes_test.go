@@ -32,6 +32,8 @@ func TestScrubCrashData(t *testing.T) {
 	in = append(in, "LogInit: Computer: DESKTOP-ABC\r\nLogInit: User: jane\r\n"...)
 	in = append(in, wide("USERNAME=jane\x00COMPUTERNAME=DESKTOP-ABC\x00PATH=C:\\Windows\x00")...)
 	in = append(in, wide("G:\\Users\\Jörg\\x\x00")...)
+	in = append(in, "<MachineId>0123456789ABCDEF0123456789ABCDEF</MachineId><EpicAccountId>abcdef0123456789abcdef0123456789</EpicAccountId>"...)
+	in = append(in, wide("<LoginId>9f8e7d6c5b4a</LoginId>")...)
 	in = append(in, "eyJshort keep \xff\xfe"...)
 	out := append([]byte(nil), in...)
 	scrubCrashData(out, nil)
@@ -40,13 +42,15 @@ func TestScrubCrashData(t *testing.T) {
 		t.Fatalf("length %d -> %d", len(in), len(out))
 	}
 	for _, gone := range [][]byte{[]byte(tok), wide(tok), []byte("Jane Doe"), wide("Jane Doe"), []byte("DESKTOP-ABC"),
-		wide("DESKTOP-ABC"), []byte("User: jane"), wide("=jane"), wide("Jörg")} {
+		wide("DESKTOP-ABC"), []byte("User: jane"), wide("=jane"), wide("Jörg"), []byte("0123456789ABCDEF"), []byte("abcdef0123"),
+		wide("9f8e7d6c5b4a")} {
 		if bytes.Contains(out, gone) {
 			t.Errorf("still holds %q", gone)
 		}
 	}
 	for _, kept := range [][]byte{[]byte("C:\\Users\\********\\AppData"), wide("Z:/users/********/Saved"), wide("PATH=C:\\Windows"),
-		[]byte("eyJshort keep \xff\xfe"), []byte("LogInit: Computer: ***********\r\n"), wide("G:\\Users\\****\\x")} {
+		[]byte("eyJshort keep \xff\xfe"), []byte("LogInit: Computer: ***********\r\n"), wide("G:\\Users\\****\\x"),
+		[]byte("<MachineId>********************************</MachineId>"), wide("<LoginId>************</LoginId>")} {
 		if !bytes.Contains(out, kept) {
 			t.Errorf("lost %q", kept)
 		}

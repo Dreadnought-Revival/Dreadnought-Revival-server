@@ -27,6 +27,13 @@ var crashScrubLineKeys = []string{
 	"LOGONSERVER=", "USERPROFILE=", "HOMEPATH=", "ONEDRIVE=", "ONEDRIVECONSUMER=",
 }
 
+// crashScrubTagKeys are XML elements of the crash context
+// (CrashContext.runtime-xml) whose value, up to the next '<', identifies the
+// PC or the account outside this server: the machine id, the Epic account and
+// login ids, the Windows user name (first reports 2026-11-23: MachineId and
+// EpicAccountId came through unscrubbed).
+var crashScrubTagKeys = []string{"<MachineId>", "<EpicAccountId>", "<LoginId>", "<UserName>", "<UserDescription>"}
+
 // scrubCrashData overwrites the private parts of b in place. needles are
 // further strings to remove wherever they appear, case-insensitively.
 func scrubCrashData(b []byte, needles []string) {
@@ -35,6 +42,9 @@ func scrubCrashData(b []byte, needles []string) {
 		scrubCrashUserDirs(b, w)
 		for _, k := range crashScrubLineKeys {
 			scrubCrashAfterKey(b, w, k)
+		}
+		for _, k := range crashScrubTagKeys {
+			scrubCrashTagValue(b, w, k)
 		}
 		for _, n := range needles {
 			scrubCrashNeedle(b, w, n)
@@ -174,6 +184,28 @@ func scrubCrashAfterKey(b []byte, w int, key string) {
 		for n := 0; k+w <= len(b) && n < 260; n++ {
 			if b[k] == 0 && (w == 1 || b[k+1] == 0) || (w == 1 || b[k+1] == 0) && (b[k] == '\r' || b[k] == '\n') {
 				break
+			}
+			k += w
+		}
+		crashStar(b, start, k, w)
+		i = k - 1
+	}
+}
+
+// scrubCrashTagValue: the value after an XML start tag, up to the next '<'
+// (or the end of the line or string).
+func scrubCrashTagValue(b []byte, w int, tag string) {
+	for i := 0; i+len(tag)*w <= len(b); i++ {
+		if b[i] != '<' || !crashMatchFold(b, i, w, tag) {
+			continue
+		}
+		start := i + len(tag)*w
+		k := start
+		for n := 0; k+w <= len(b) && n < 260; n++ {
+			if w == 1 || b[k+1] == 0 {
+				if c := b[k]; c == '<' || c == 0 || c == '\r' || c == '\n' {
+					break
+				}
 			}
 			k += w
 		}
