@@ -495,6 +495,7 @@ func adminAPIPlayerProfile(w http.ResponseWriter, r *http.Request) {
 	out["reports"] = map[string]any{"total": reports, "last_7d": reports7, "last": lastReport}
 	out["telemetry"] = map[string]any{"total": telemetry, "last_7d": telemetry7, "last": lastTelemetry}
 	out["client_logs"] = playerClientLogs(database, pid, 50)
+	out["client_crashes"] = playerClientCrashes(database, pid, 50)
 
 	// --- notes ---------------------------------------------------------------
 	out["notes"] = adminPlayerNotes(database, pid)

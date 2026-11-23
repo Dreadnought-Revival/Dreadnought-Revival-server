@@ -44,6 +44,7 @@ func main() {
 
 	dbPath := getenv("DB_PATH", "mmog.db")
 	configureClientLogs(dbPath)
+	configureClientCrashes(dbPath)
 	addr := getenv("ADDR", ":8083")
 	secret := requireJWTSecret(log)
 	setMmogJWTSecret(secret)
@@ -396,6 +397,9 @@ func newRouter(h *handlers.Handler, secret []byte, adminKey, internalAPIKey stri
 	// The same, in parts for a whole session's log (client_logs_chunked.go).
 	r.HandleFunc("/launcher/log/part", launcherLogPartHandler).Methods(http.MethodPost)
 	r.HandleFunc("/launcher/log/commit", launcherLogCommitHandler).Methods(http.MethodPost)
+	// Crash reports the game queued with Windows Error Reporting (client_crashes.go).
+	r.HandleFunc("/launcher/crash/part", launcherCrashPartHandler).Methods(http.MethodPost)
+	r.HandleFunc("/launcher/crash/commit", launcherCrashCommitHandler).Methods(http.MethodPost)
 
 	// Admin dashboard (admin_dashboard.go): registered before the /admin
 	// subrouter so the static page is served without a key; its data API

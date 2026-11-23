@@ -668,6 +668,26 @@ var migrations = []string{
 	// Custom room matches (custom_rooms.go): recorded and played like any
 	// match, but they pay no rewards (battle_result.go).
 	`ALTER TABLE matches ADD COLUMN custom INTEGER NOT NULL DEFAULT 0`,
+	// Crash reports the launcher uploads (client_crashes.go): a zip of the
+	// Windows Error Report the game queued, on disk (path, relative to the
+	// crash-reports folder). report_name is the report's folder name, so a
+	// report is stored once; report_time its folder's time stamp.
+	`CREATE TABLE IF NOT EXISTS client_crashes (
+		id               INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id          TEXT NOT NULL,
+		uploaded_at      TEXT NOT NULL DEFAULT (datetime('now')),
+		report_name      TEXT NOT NULL,
+		report_time      INTEGER NOT NULL DEFAULT 0,
+		exit_code        INTEGER NOT NULL DEFAULT -1,
+		on_exit          INTEGER NOT NULL DEFAULT 0,
+		seconds          INTEGER NOT NULL DEFAULT 0,
+		late             INTEGER NOT NULL DEFAULT 0,
+		launcher_version TEXT NOT NULL DEFAULT '',
+		files            INTEGER NOT NULL DEFAULT 0,
+		bytes            INTEGER NOT NULL DEFAULT 0,
+		path             TEXT NOT NULL
+	)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS client_crashes_report ON client_crashes(user_id, report_name)`,
 }
 
 func Open(path string) (*sql.DB, error) {

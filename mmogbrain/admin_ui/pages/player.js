@@ -300,6 +300,16 @@
             : g.exit_code !== 0 ? chip('closed, crashed on exit (' + g.exit_code + ')', 'warn') : chip('closed', 'good'),
           bytes(g.bytes) + (g.stored_bytes ? ' (' + bytes(g.stored_bytes) + ' stored)' : ''), g.launcher_version || '—', logButton(g)]), 'No game logs uploaded yet.'),
         el('div', { class: 'muted' }, 'The launcher uploads the whole DreadGame.log when the game closes (since launcher v1.0.11; older ones sent only the first 256 KiB and the last 1.75 MiB, which is all the game kept), without the sign-in token and the Windows computer and user names. "Crashed on exit": the game shut down completely, then its process ended with an error code (0xC0000005 = 3221225477 on every quit, harmless).')),
+      section(`Crash reports from the launcher (${fmt((P.client_crashes || []).length)})`,
+        table(['Uploaded', 'Session', 'Crash', 'Files', 'Size', 'Launcher', ''], (P.client_crashes || []).map((c) => [when(c.uploaded_at),
+          c.seconds ? duration(c.seconds) : '—',
+          c.on_exit ? chip('on exit (' + c.exit_code + ')', 'warn') : c.late ? chip('sent at next start', 'warn') : chip('during play (exit ' + c.exit_code + ')', 'bad'),
+          fmt(c.files), bytes(c.bytes) + (c.stored_bytes ? ' (' + bytes(c.stored_bytes) + ' stored)' : ''), c.launcher_version || '—',
+          el('button', { class: 'btn small', type: 'button', title: c.report_name, onclick: async () => {
+            const r = await act(() => apiBlob('/client-crashes/' + c.id), msg(), 'Downloaded.');
+            if (r) download(r.name, r.blob);
+          } }, 'Download .zip')]), 'No crash reports uploaded yet.'),
+        el('div', { class: 'muted' }, 'When the game crashes it queues a Windows Error Report with a minidump (UE4Minidump.dmp) and its files; the launcher zips and uploads it, with the sign-in token and the Windows computer and user names overwritten by * (same length, so the dump still opens in a debugger). Open the .dmp in WinDbg or Visual Studio with DreadGame-Win64-Shipping.exe beside it.')),
     ];
   }
 
