@@ -32,12 +32,12 @@ func pvpTestDB(t *testing.T) *sql.DB {
 		 server_port INTEGER, status TEXT, created_at TEXT, started_at TEXT, ended_at TEXT,
 		 instance_id TEXT NOT NULL DEFAULT '', server_ready_at TEXT,
 		 battle_match_id TEXT NOT NULL DEFAULT '', fleet_type INTEGER NOT NULL DEFAULT 1,
-		 custom INTEGER NOT NULL DEFAULT 0)`,
+		 custom INTEGER NOT NULL DEFAULT 0, pvp_only INTEGER NOT NULL DEFAULT 0)`,
 		`CREATE TABLE match_slots (match_id TEXT, user_id TEXT, team INTEGER,
 		 joined_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (match_id, user_id))`,
 		`CREATE TABLE queue_entries (id TEXT PRIMARY KEY, user_id TEXT, game_mode TEXT,
 		 tier_min INTEGER, status TEXT, queued_at TEXT, fleet_type INTEGER NOT NULL DEFAULT 1,
-		 party_id TEXT NOT NULL DEFAULT '')`,
+		 party_id TEXT NOT NULL DEFAULT '', pvp_only INTEGER NOT NULL DEFAULT 0)`,
 		`CREATE TABLE battle_results (match_id TEXT, user_id TEXT)`,
 	} {
 		if _, err := database.Exec(ddl); err != nil {

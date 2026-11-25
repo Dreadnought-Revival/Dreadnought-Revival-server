@@ -252,8 +252,9 @@ var (
 )
 
 // serverChatQueueLine is the "queue started" announcement, or "" for a mode
-// nobody else can join (solo tutorial modes).
-func serverChatQueueLine(gameMode string, fleetType int32, partySize int) string {
+// nobody else can join (solo tutorial modes). A PvP-only queue (queue_prefs.go)
+// says so, and how to join it.
+func serverChatQueueLine(gameMode string, fleetType int32, partySize int, pvpOnly bool) string {
 	mode, ok := serverChatModeNames[gameMode]
 	if !ok {
 		return ""
@@ -262,6 +263,10 @@ func serverChatQueueLine(gameMode string, fleetType int32, partySize int) string
 	who := "A player is"
 	if partySize > 1 {
 		who = fmt.Sprintf("A squad of %d is", partySize)
+	}
+	if pvpOnly {
+		return fmt.Sprintf("%s searching for a PvP-only %s %s match (no bots). Type /pvp-only and queue with your %s fleet to play against them!",
+			who, fleet, mode, fleet)
 	}
 	return fmt.Sprintf("%s searching for a %s %s match. Queue with your %s fleet now to play together!",
 		who, fleet, mode, fleet)
@@ -278,24 +283,27 @@ func serverChatQueueLine(gameMode string, fleetType int32, partySize int) string
 // client's chat protocol has no delete or edit (chat.channel.notice/info/
 // message and chat.user.message only) -- so they buried the ones that were
 // still open (operator, 2026-10-03).
-func announceQueueStarted(gameMode string, fleetType int32, partySize int) {
+func announceQueueStarted(gameMode string, fleetType int32, partySize int, pvpOnly bool) {
 	if !serverChatEnabled() {
 		return
 	}
-	line := serverChatQueueLine(gameMode, fleetType, partySize)
+	line := serverChatQueueLine(gameMode, fleetType, partySize, pvpOnly)
 	if line == "" {
 		return
 	}
-	if serverChatQueueWaiting(gameMode, fleetType) > partySize {
+	if serverChatQueueWaiting(gameMode, fleetType, pvpOnly) > partySize {
 		return // others were already waiting: the queue had started before
 	}
 	delay := serverChatDuration("DN_SERVER_CHAT_QUEUE_DELAY", 8*time.Second)
 	go func() {
 		time.Sleep(delay)
-		if serverChatQueueWaiting(gameMode, fleetType) == 0 {
+		if serverChatQueueWaiting(gameMode, fleetType, pvpOnly) == 0 {
 			return // the match started already: nothing to join
 		}
 		key := gameMode + "/" + strings.ToLower(fleetTypeName(fleetType))
+		if pvpOnly {
+			key += "/pvp-only"
+		}
 		cooldown := serverChatDuration("DN_SERVER_CHAT_QUEUE_COOLDOWN", 2*time.Minute)
 		serverChatQueueMu.Lock()
 		if last, ok := serverChatQueueLast[key]; ok && time.Since(last) < cooldown {
@@ -308,15 +316,16 @@ func announceQueueStarted(gameMode string, fleetType int32, partySize int) {
 	}()
 }
 
-// serverChatQueueWaiting counts the players waiting in one queue.
-func serverChatQueueWaiting(gameMode string, fleetType int32) int {
+// serverChatQueueWaiting counts the players waiting in one queue (one pool:
+// PvP only or not).
+func serverChatQueueWaiting(gameMode string, fleetType int32, pvpOnly bool) int {
 	database := currentMmogPlayerStateDB()
 	if database == nil {
 		return 0
 	}
 	var waiting int
-	_ = database.QueryRow(`SELECT COUNT(*) FROM queue_entries WHERE status='waiting' AND game_mode=? AND fleet_type=?`,
-		gameMode, fleetType).Scan(&waiting)
+	_ = database.QueryRow(`SELECT COUNT(*) FROM queue_entries WHERE status='waiting' AND game_mode=? AND fleet_type=? AND pvp_only=?`,
+		gameMode, fleetType, pvpOnly).Scan(&waiting)
 	return waiting
 }
 
@@ -327,8 +336,8 @@ func serverChatOpenQueues() string {
 	if database == nil {
 		return ""
 	}
-	rows, err := database.Query(`SELECT game_mode, fleet_type, COUNT(*) FROM queue_entries WHERE status='waiting'
-		GROUP BY game_mode, fleet_type ORDER BY fleet_type, game_mode`)
+	rows, err := database.Query(`SELECT game_mode, fleet_type, pvp_only, COUNT(*) FROM queue_entries WHERE status='waiting'
+		GROUP BY game_mode, fleet_type, pvp_only ORDER BY fleet_type, game_mode, pvp_only`)
 	if err != nil {
 		return ""
 	}
@@ -337,13 +346,17 @@ func serverChatOpenQueues() string {
 	for rows.Next() {
 		var mode string
 		var fleet int32
+		var pvpOnly bool
 		var n int
-		if rows.Scan(&mode, &fleet, &n) != nil {
+		if rows.Scan(&mode, &fleet, &pvpOnly, &n) != nil {
 			continue
 		}
 		name, ok := serverChatModeNames[mode]
 		if !ok {
 			continue
+		}
+		if pvpOnly {
+			name += " PvP only"
 		}
 		parts = append(parts, fmt.Sprintf("%s %s (%d waiting)", fleetTypeName(fleet), name, n))
 	}

@@ -688,6 +688,19 @@ var migrations = []string{
 		path             TEXT NOT NULL
 	)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS client_crashes_report ON client_crashes(user_id, report_name)`,
+	// How a player queues, set with the /pvp-only and /pvp chat commands
+	// (queue_prefs.go; operator 2026-11-25). user_id undashed, lower case.
+	// pvp_only 1: only players, no bots (a separate pool); 0: today's
+	// matchmaking, bots fill the teams.
+	`CREATE TABLE IF NOT EXISTS player_queue_prefs (
+		user_id    TEXT PRIMARY KEY,
+		pvp_only   INTEGER NOT NULL DEFAULT 0,
+		updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
+	// A queue entry and a match in the PvP-only pool (matchmaker: grouped,
+	// backfilled and hosted apart; the host gets DNTeamAI=00).
+	`ALTER TABLE queue_entries ADD COLUMN pvp_only INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE matches ADD COLUMN pvp_only INTEGER NOT NULL DEFAULT 0`,
 }
 
 func Open(path string) (*sql.DB, error) {

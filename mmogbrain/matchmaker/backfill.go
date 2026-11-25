@@ -49,20 +49,23 @@ type backfillMatch struct {
 
 // backfill places the waiting parties of one queue bucket into running
 // matches. It returns how many players it placed.
-func (m *Matchmaker) backfill(gameMode string, tierMin, fleetType int) (int, error) {
+//
+// The PvP-only pool (pvp_only.go) backfills only PvP-only matches, and the
+// others only matches that are not.
+func (m *Matchmaker) backfill(gameMode string, tierMin, fleetType int, pvpOnly bool) (int, error) {
 	runMode := runnableGameMode(gameMode)
 	if m.BackfillWindow <= 0 || !m.BackfillModes[runMode] {
 		return 0, nil
 	}
-	groups, err := m.waitingGroups(gameMode, tierMin, fleetType)
+	groups, err := m.waitingGroups(gameMode, tierMin, fleetType, pvpOnly)
 	if err != nil || len(groups) == 0 {
 		return 0, err
 	}
 	cutoff := time.Now().UTC().Add(-m.BackfillWindow).Format(time.RFC3339)
 	rows, err := m.DB.Query(`SELECT id, battle_match_id FROM matches
-		WHERE status='active' AND custom=0 AND game_mode=? AND fleet_type=? AND server_ready_at IS NOT NULL
+		WHERE status='active' AND custom=0 AND game_mode=? AND fleet_type=? AND pvp_only=? AND server_ready_at IS NOT NULL
 		  AND datetime(created_at) >= datetime(?)
-		ORDER BY created_at DESC`, runMode, fleetType, cutoff)
+		ORDER BY created_at DESC`, runMode, fleetType, pvpOnly, cutoff)
 	if err != nil {
 		return 0, err
 	}
@@ -144,6 +147,7 @@ func (m *Matchmaker) backfill(gameMode string, tierMin, fleetType int) (int, err
 			"match_id":   target.id,
 			"game_mode":  runMode,
 			"fleet_type": fleetType,
+			"pvp_only":   pvpOnly,
 			"players":    len(g),
 			"team":       team,
 			"in_match":   target.total,

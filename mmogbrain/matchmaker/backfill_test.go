@@ -83,7 +83,7 @@ func TestBackfillOnlyIntoAFittingMatch(t *testing.T) {
 			m.BackfillModes = map[string]bool{"TDM": true}
 			addRunningMatch(t, m, "running", "TDM", c.fleet, c.age, c.ready, c.slots)
 			queuePlayer(t, database, "q1", "new", "TDM", time.Now().UTC().Format(time.RFC3339))
-			if placed, err := m.backfill("TDM", 1, 1); err != nil || placed != 0 {
+			if placed, err := m.backfill("TDM", 1, 1, false); err != nil || placed != 0 {
 				t.Errorf("placed %d (err %v), want 0", placed, err)
 			}
 		})
@@ -100,7 +100,7 @@ func TestBackfillKeepsASquadTogether(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	queueParty(t, database, "q1", "leader", "sq", now)
 	queueParty(t, database, "q2", "member", "sq", now)
-	if placed, err := m.backfill("TDM", 1, 1); err != nil || placed != 2 {
+	if placed, err := m.backfill("TDM", 1, 1, false); err != nil || placed != 2 {
 		t.Fatalf("placed %d (err %v), want the squad of 2", placed, err)
 	}
 	teams := slotTeams(t, database)
@@ -111,7 +111,7 @@ func TestBackfillKeepsASquadTogether(t *testing.T) {
 	// Now full (4/4): a third squad member's party of 2 does not fit.
 	queueParty(t, database, "q3", "x", "sq2", now)
 	queueParty(t, database, "q4", "y", "sq2", now)
-	if placed, _ := m.backfill("TDM", 1, 1); placed != 0 {
+	if placed, _ := m.backfill("TDM", 1, 1, false); placed != 0 {
 		t.Errorf("placed %d into a full match", placed)
 	}
 }
@@ -128,10 +128,10 @@ func TestBackfillOnlyInListedModes(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	queuePlayer(t, database, "q1", "late-te", "TE", now)
 	queuePlayer(t, database, "q2", "late-tdm", "TDM", now)
-	if placed, err := m.backfill("TE", 1, 1); err != nil || placed != 0 {
+	if placed, err := m.backfill("TE", 1, 1, false); err != nil || placed != 0 {
 		t.Errorf("TE: placed %d (err %v), want 0", placed, err)
 	}
-	if placed, err := m.backfill("TDM", 1, 1); err != nil || placed != 1 {
+	if placed, err := m.backfill("TDM", 1, 1, false); err != nil || placed != 1 {
 		t.Errorf("TDM: placed %d (err %v), want 1", placed, err)
 	}
 }
@@ -157,13 +157,13 @@ func TestBackfillSkipsAMatchWithAResult(t *testing.T) {
 			if _, err := database.Exec(`INSERT INTO battle_results(match_id,user_id) VALUES(?,'a')`, resultID); err != nil {
 				t.Fatal(err)
 			}
-			if placed, err := m.backfill("TDM", 1, 1); err != nil || placed != 0 {
+			if placed, err := m.backfill("TDM", 1, 1, false); err != nil || placed != 0 {
 				t.Errorf("placed %d (err %v) into a finished match", placed, err)
 			}
 			if _, err := database.Exec(`DELETE FROM battle_results WHERE match_id=?`, resultID); err != nil {
 				t.Fatal(err)
 			}
-			if placed, err := m.backfill("TDM", 1, 1); err != nil || placed != 1 {
+			if placed, err := m.backfill("TDM", 1, 1, false); err != nil || placed != 1 {
 				t.Errorf("placed %d (err %v), want 1 once only another match has a result", placed, err)
 			}
 		})
@@ -226,7 +226,7 @@ func TestBackfillSkipsCustomMatches(t *testing.T) {
 		t.Fatal(err)
 	}
 	queuePlayer(t, database, "q1", "stranger", "TDM", time.Now().UTC().Format(time.RFC3339))
-	if placed, err := m.backfill("TDM", 1, 1); err != nil || placed != 0 {
+	if placed, err := m.backfill("TDM", 1, 1, false); err != nil || placed != 0 {
 		t.Fatalf("placed %d (err %v) into a custom match", placed, err)
 	}
 }

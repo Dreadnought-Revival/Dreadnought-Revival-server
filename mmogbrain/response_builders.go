@@ -357,14 +357,16 @@ func buildMmogEnterMatchmakingPayload(requestName string, playerPID string, payl
 				Warn("matchmaking: queue refused -- the fleet cannot be taken into a match")
 			return buildMmogMatchmakingErrorPayload(requestName, 2, reason, "the fleet cannot be taken into a match")
 		}
+		// The player's /pvp-only or /pvp choice (queue_prefs.go).
+		pvpOnly := queueEntryPvPOnly(database, pid, gameMode)
 		_, _ = database.Exec(`DELETE FROM queue_entries WHERE user_id=? AND status='waiting'`, pid)
-		if _, err := database.Exec(`INSERT INTO queue_entries(id,user_id,game_mode,tier_min,tier_max,fleet_type,status) VALUES(?,?,?,?,?,?,'waiting')`,
-			entryID, pid, gameMode, tierMin, tierMax, fleetType); err != nil {
+		if _, err := database.Exec(`INSERT INTO queue_entries(id,user_id,game_mode,tier_min,tier_max,fleet_type,status,pvp_only) VALUES(?,?,?,?,?,?,'waiting',?)`,
+			entryID, pid, gameMode, tierMin, tierMax, fleetType, pvpOnly); err != nil {
 			return buildMmogMatchmakingErrorPayload(requestName, 2, "invalid_player", "queue insert failed")
 		}
-		logrus.WithFields(logrus.Fields{"pid": pid, "mode": gameMode, "fleet_type": fleetType, "fleet": fleetTypeName(fleetType)}).
-			Info("matchmaking: player queued")
-		announceQueueStarted(gameMode, fleetType, 1)
+		logrus.WithFields(logrus.Fields{"pid": pid, "mode": gameMode, "fleet_type": fleetType, "fleet": fleetTypeName(fleetType),
+			"pvp_only": pvpOnly}).Info("matchmaking: player queued")
+		announceQueueStarted(gameMode, fleetType, 1, pvpOnly)
 	}
 
 	return buildMmogMatchmakingPayload(requestName, mmogMatchmakingStatus{

@@ -672,10 +672,11 @@ func (m *Matchmaker) tick() error {
 	// And by fleet_type: a match has ONE fleet tier for everyone in it (the
 	// battle server reads it once into its GameState, see fleetTierURLValue),
 	// so Recruit, Veteran and Legendary fleets never share a match.
+	// And by pvp_only: the PvP-only pool never shares a match (pvp_only.go).
 	rows, err := m.DB.Query(`
-		SELECT game_mode, tier_min, fleet_type, COUNT(*) as cnt, MIN(queued_at)
+		SELECT game_mode, tier_min, fleet_type, pvp_only, COUNT(*) as cnt, MIN(queued_at)
 		FROM queue_entries WHERE status='waiting'
-		GROUP BY game_mode, tier_min, fleet_type
+		GROUP BY game_mode, tier_min, fleet_type, pvp_only
 	`)
 	if err != nil {
 		return fmt.Errorf("queue query: %w", err)
@@ -688,13 +689,14 @@ func (m *Matchmaker) tick() error {
 		GameMode  string
 		TierMin   int
 		FleetType int
+		PvPOnly   bool
 		Count     int
 		Oldest    string
 	}
 	var buckets []bucket
 	for rows.Next() {
 		var b bucket
-		if err := rows.Scan(&b.GameMode, &b.TierMin, &b.FleetType, &b.Count, &b.Oldest); err != nil {
+		if err := rows.Scan(&b.GameMode, &b.TierMin, &b.FleetType, &b.PvPOnly, &b.Count, &b.Oldest); err != nil {
 			return fmt.Errorf("scan ready queue counts: %w", err)
 		}
 		buckets = append(buckets, b)
@@ -704,15 +706,21 @@ func (m *Matchmaker) tick() error {
 	}
 	_ = rows.Close()
 
-	available := -1 // fixed size
+	available, availablePvPOnly := -1, -1 // fixed size
 	if m.OnlinePlayers != nil && len(buckets) > 0 {
 		available = m.availablePlayers()
+		for _, b := range buckets {
+			if b.PvPOnly {
+				availablePvPOnly = m.availablePvPOnlyPlayers()
+				break
+			}
+		}
 	}
 	now := time.Now().UTC()
 	for _, b := range buckets {
 		// A running match with room comes first (backfill.go). Whoever it
 		// placed is out of the queue; the rest are counted again next tick.
-		if placed, err := m.backfill(b.GameMode, b.TierMin, b.FleetType); err != nil {
+		if placed, err := m.backfill(b.GameMode, b.TierMin, b.FleetType, b.PvPOnly); err != nil {
 			m.Log.WithError(err).Warn("backfill failed")
 		} else if placed > 0 {
 			continue
@@ -722,21 +730,28 @@ func (m *Matchmaker) tick() error {
 		overallCap, maxWait := m.Sizing()
 		maxSize := maxPlayersFor(b.GameMode, overallCap)
 		size := maxSize
-		if available >= 0 {
+		if avail := available; avail >= 0 {
+			if b.PvPOnly {
+				avail = availablePvPOnly
+			}
 			waited := time.Duration(0)
 			if t, ok := parseQueuedAt(b.Oldest); ok {
 				waited = now.Sub(t)
 			}
-			size = requiredMatchSize(b.Count, available, maxSize, waited, maxWait)
+			size = requiredMatchSize(b.Count, avail, maxSize, waited, maxWait)
+		}
+		if b.PvPOnly {
+			size = pvpOnlyMatchSize(size)
 		}
 		if size < 1 || b.Count < size {
 			continue
 		}
-		if err := m.formMatchOfSize(b.GameMode, b.TierMin, b.FleetType, size); err != nil {
+		if err := m.formMatchOfSize(b.GameMode, b.TierMin, b.FleetType, size, b.PvPOnly); err != nil {
 			m.Log.WithError(err).WithFields(logrus.Fields{
 				"game_mode":  b.GameMode,
 				"tier_min":   b.TierMin,
 				"fleet_type": b.FleetType,
+				"pvp_only":   b.PvPOnly,
 				"size":       size,
 			}).Warn("form match failed")
 		}
@@ -792,6 +807,18 @@ func (m *Matchmaker) availablePlayers() int {
 		_ = rows.Close()
 	}
 	if rows, err := m.DB.Query(`SELECT s.user_id FROM match_slots s JOIN matches m ON m.id = s.match_id WHERE m.status='active'`); err == nil {
+		for rows.Next() {
+			var id string
+			if rows.Scan(&id) == nil {
+				delete(set, normalizeUserID(id))
+			}
+		}
+		_ = rows.Close()
+	}
+	// Players waiting in the PvP-only pool never join a match with bots, so a
+	// /pvp queue must not wait for them (pvp_only.go; they have their own
+	// count, availablePvPOnlyPlayers).
+	if rows, err := m.DB.Query(`SELECT user_id FROM queue_entries WHERE status='waiting' AND pvp_only=1`); err == nil {
 		for rows.Next() {
 			var id string
 			if rows.Scan(&id) == nil {
@@ -988,7 +1015,7 @@ const DefaultSpawnableGameMode = "TM"
 
 func (m *Matchmaker) formMatch(gameMode string, tierMin int, fleetType int) error {
 	players, _ := m.Sizing()
-	return m.formMatchOfSize(gameMode, tierMin, fleetType, players)
+	return m.formMatchOfSize(gameMode, tierMin, fleetType, players, false)
 }
 
 // queueEntry is one waiting player.
@@ -998,15 +1025,15 @@ type queueEntry struct {
 	Party  string
 }
 
-// waitingGroups is the waiting players for a mode, tier and fleet type, oldest
-// first, grouped by party: a squad (party_id, see squads.go) is placed whole
-// or not at all, and on one team.
-func (m *Matchmaker) waitingGroups(gameMode string, tierMin int, fleetType int) ([][]queueEntry, error) {
+// waitingGroups is the waiting players for a mode, tier, fleet type and pool
+// (PvP only or not), oldest first, grouped by party: a squad (party_id, see
+// squads.go) is placed whole or not at all, and on one team.
+func (m *Matchmaker) waitingGroups(gameMode string, tierMin int, fleetType int, pvpOnly bool) ([][]queueEntry, error) {
 	rows, err := m.DB.Query(`
 		SELECT id, user_id, party_id FROM queue_entries
-		WHERE status='waiting' AND game_mode=? AND tier_min=? AND fleet_type=?
+		WHERE status='waiting' AND game_mode=? AND tier_min=? AND fleet_type=? AND pvp_only=?
 		ORDER BY queued_at ASC, id ASC
-	`, gameMode, tierMin, fleetType)
+	`, gameMode, tierMin, fleetType, pvpOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -1036,8 +1063,8 @@ func (m *Matchmaker) waitingGroups(gameMode string, tierMin int, fleetType int) 
 	return groups, nil
 }
 
-func (m *Matchmaker) formMatchOfSize(gameMode string, tierMin int, fleetType int, size int) error {
-	groups, err := m.waitingGroups(gameMode, tierMin, fleetType)
+func (m *Matchmaker) formMatchOfSize(gameMode string, tierMin int, fleetType int, size int, pvpOnly bool) error {
+	groups, err := m.waitingGroups(gameMode, tierMin, fleetType, pvpOnly)
 	if err != nil {
 		return err
 	}
@@ -1079,6 +1106,11 @@ func (m *Matchmaker) formMatchOfSize(gameMode string, tierMin int, fleetType int
 			teams = append(teams, team)
 		}
 		perTeam[team] += len(g)
+	}
+	// A PvP-only match has no bots, so it needs players on both teams: a
+	// squad alone (or the oldest party over the size) waits for opponents.
+	if pvpOnly && (perTeam[1] == 0 || perTeam[2] == 0) {
+		return nil
 	}
 
 	// Mark them as matched
@@ -1147,7 +1179,13 @@ func (m *Matchmaker) formMatchOfSize(gameMode string, tierMin int, fleetType int
 	// The team size goes to the battle server too: the mod fills each side
 	// with bots up to it (switches.go HostTeamSize, DNTeamSize).
 	hostTeamSize, hostMaxPlayers := HostTeamSize(queuedMode)
-	serverIP, serverPort, instanceID, battleMatchID, err := m.requestGameInstance(launchMode, mapName, chosen.Path, playerIDs, fleetTierURLValue(fleetType), hostTeamSize, hostMaxPlayers)
+	var extra []map[string]interface{}
+	if pvpOnly {
+		// No bots on either team (pvp_only.go). HostTeamSize always sends a
+		// PvP queue's team size, which the mod's DNTeamAI balance runs with.
+		extra = append(extra, map[string]interface{}{"team_ai": pvpOnlyTeamAI})
+	}
+	serverIP, serverPort, instanceID, battleMatchID, err := m.requestGameInstance(launchMode, mapName, chosen.Path, playerIDs, fleetTierURLValue(fleetType), hostTeamSize, hostMaxPlayers, extra...)
 	if err != nil {
 		// Rollback queue entries on failure
 		for _, e := range entries {
@@ -1171,8 +1209,8 @@ func (m *Matchmaker) formMatchOfSize(gameMode string, tierMin int, fleetType int
 		return fmt.Errorf("record match: %w", err)
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO matches(id,game_mode,map,server_ip,server_port,status,created_at,started_at,instance_id,battle_match_id,fleet_type) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		matchID, gameMode, mapName, serverIP, serverPort, "active", now, now, instanceID, battleMatchID, fleetType,
+		`INSERT INTO matches(id,game_mode,map,server_ip,server_port,status,created_at,started_at,instance_id,battle_match_id,fleet_type,pvp_only) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		matchID, gameMode, mapName, serverIP, serverPort, "active", now, now, instanceID, battleMatchID, fleetType, pvpOnly,
 	); err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("insert match %s: %w", matchID, err)
@@ -1204,6 +1242,7 @@ func (m *Matchmaker) formMatchOfSize(gameMode string, tierMin int, fleetType int
 		"game_mode":   gameMode,
 		"tier_min":    tierMin,
 		"fleet_type":  fleetType,
+		"pvp_only":    pvpOnly,
 		"map":         mapName,
 		"players":     len(entries),
 		"server":      fmt.Sprintf("%s:%d", serverIP, serverPort),

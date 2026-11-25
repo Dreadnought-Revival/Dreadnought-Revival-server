@@ -195,14 +195,14 @@ func TestQueueStartedAnnouncement(t *testing.T) {
 
 	// Filled at once (the match started before the delay): not announced.
 	queue("q0", "z", "TDM", 3)
-	announceQueueStarted("TDM", 3, 1)
+	announceQueueStarted("TDM", 3, 1, false)
 	clear()
 	if !noPush(pushes, 200*time.Millisecond) {
 		t.Error("announced a queue the matchmaker had already filled")
 	}
 
 	queue("q1", "a", "TDM", 2)
-	announceQueueStarted("TDM", 2, 1)
+	announceQueueStarted("TDM", 2, 1, false)
 	nextPush(t, pushes) // profile
 	_, data := nextPush(t, pushes)
 	want := "A player is searching for a Veteran Team Deathmatch match. Queue with your Veteran fleet now to play together!"
@@ -211,7 +211,7 @@ func TestQueueStartedAnnouncement(t *testing.T) {
 	}
 
 	queue("q2", "b", "TDM", 2) // joins a queue that already started
-	announceQueueStarted("TDM", 2, 1)
+	announceQueueStarted("TDM", 2, 1, false)
 	if !noPush(pushes, 200*time.Millisecond) {
 		t.Error("announced a second player joining a started queue")
 	}
@@ -225,20 +225,20 @@ func TestQueueStartedAnnouncement(t *testing.T) {
 
 	clear()
 	queue("q3", "c", "TDM", 2) // empty again, but within the cooldown
-	announceQueueStarted("TDM", 2, 1)
+	announceQueueStarted("TDM", 2, 1, false)
 	if !noPush(pushes, 200*time.Millisecond) {
 		t.Error("announced again within the cooldown")
 	}
 
 	queue("q4", "d", "BC", 1) // the solo bootcamp: nobody can join
-	announceQueueStarted("BC", 1, 1)
+	announceQueueStarted("BC", 1, 1, false)
 	if !noPush(pushes, 200*time.Millisecond) {
 		t.Error("announced a solo mode")
 	}
-	if got := serverChatQueueLine("TurboTDM", 2, 1); got != "A player is searching for a Veteran Turbo TDM match. Queue with your Veteran fleet now to play together!" {
+	if got := serverChatQueueLine("TurboTDM", 2, 1, false); got != "A player is searching for a Veteran Turbo TDM match. Queue with your Veteran fleet now to play together!" {
 		t.Errorf("Turbo TDM line: %q", got)
 	}
-	if got := serverChatQueueLine("TE", 3, 3); got != "A squad of 3 is searching for a Legendary Team Elimination match. Queue with your Legendary fleet now to play together!" {
+	if got := serverChatQueueLine("TE", 3, 3, false); got != "A squad of 3 is searching for a Legendary Team Elimination match. Queue with your Legendary fleet now to play together!" {
 		t.Errorf("squad line %q", got)
 	}
 }

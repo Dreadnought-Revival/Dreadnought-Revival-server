@@ -78,6 +78,9 @@ func (h *squadHub) enterSquadMatchmaking(playerPID string, payload []byte) []byt
 	}
 	gameMode = matchmaker.NormalizeGameMode(gameMode)
 	database := currentMmogPlayerStateDB()
+	// The squad queues with its leader's /pvp-only or /pvp choice
+	// (queue_prefs.go; operator 2026-11-25).
+	pvpOnly := queueEntryPvPOnly(database, pid, gameMode)
 	fleetType := protocol.FirstInt32(payload, "FleetType")
 	if fleetType < 1 || fleetType > 3 {
 		fleetType = 1
@@ -135,8 +138,8 @@ func (h *squadHub) enterSquadMatchmaking(playerPID string, payload []byte) []byt
 	if database != nil {
 		for _, m := range members {
 			_, _ = database.Exec(`DELETE FROM queue_entries WHERE user_id=? AND status='waiting'`, m)
-			if _, err := database.Exec(`INSERT INTO queue_entries(id,user_id,game_mode,tier_min,tier_max,fleet_type,status,party_id) VALUES(?,?,?,?,?,?,'waiting',?)`,
-				uuid.New().String(), m, gameMode, 1, 5, fleetType, sq.id); err != nil {
+			if _, err := database.Exec(`INSERT INTO queue_entries(id,user_id,game_mode,tier_min,tier_max,fleet_type,status,party_id,pvp_only) VALUES(?,?,?,?,?,?,'waiting',?,?)`,
+				uuid.New().String(), m, gameMode, 1, 5, fleetType, sq.id, pvpOnly); err != nil {
 				_, _ = database.Exec(`DELETE FROM queue_entries WHERE party_id=?`, sq.id)
 				h.mu.Unlock()
 				logrus.WithError(err).WithField("squad", sq.id).Warn("squad: queue insert failed")
@@ -156,8 +159,8 @@ func (h *squadHub) enterSquadMatchmaking(playerPID string, payload []byte) []byt
 		h.push(m, buildSquadInfoPayload(&record))
 	}
 	logrus.WithFields(logrus.Fields{"player": pid, "squad": record.id, "members": len(members),
-		"mode": gameMode, "fleet_type": fleetType}).Info("squad: queued for matchmaking")
-	announceQueueStarted(gameMode, fleetType, len(members))
+		"mode": gameMode, "fleet_type": fleetType, "pvp_only": pvpOnly}).Info("squad: queued for matchmaking")
+	announceQueueStarted(gameMode, fleetType, len(members), pvpOnly)
 	return buildSquadEnterMatchmakingReply("ok")
 }
 

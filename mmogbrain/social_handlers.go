@@ -276,6 +276,11 @@ func handleChatMethod(r socialRequest) map[string]any {
 		if body == "" {
 			return socialError("empty message")
 		}
+		// Queue commands (/pvp-only, /pvp, /queue, /help; queue_prefs.go)
+		// are answered to the sender only, and not stored or relayed.
+		if chatQueueCommand(r.peer, body) {
+			return socialOK(map[string]any{"channel": name})
+		}
 		if why := chatLineRefused(r.peer, body); why != "" {
 			return socialError(why)
 		}
