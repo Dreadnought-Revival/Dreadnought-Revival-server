@@ -4018,6 +4018,9 @@ static void NpcAiStartTick(uint8_t *gm) {
 // gun's mechanics. The tier's damage stays in its own projectile row.
 // GUESS: weapon02/03's own rows were copies of weapon01's. The three Blueprints
 // agree field for field, but the rows themselves are lost.
+// Since 2026-11-25 AddCommandShipGunRows puts those copies into the table's
+// JSON, so the first lookup finds them; this retry is the safety net, and its
+// "command ship gun: no weapon row" line means the rows were not added.
 #define RVA_WEAPON_GROUP_LOAD_ROW 0x518EE0
 #define OFF_WEAPON_GROUP_ROW_NAME 0x2B8
 #define OFF_WEAPON_GROUP_ROW 0x2B0
@@ -11770,6 +11773,86 @@ static void TunePatchTable(const char *table, uint8_t *fstr) {
          ml ? "; not found:" : "", missing);
 }
 
+// The Veteran / Legendary command ship gun rows (2026-11-25; operator: "lets
+// add the 2 missing rows"). The cooked DN_Weapons_OTS_DT has a row for
+// WP_ONS_AITargetH_weapon01_BP only, so every Veteran / Legendary Onslaught
+// host logged "Weapon Data for 'WP_ONS_AITargetH_weapon02_BP' Couldn't be
+// found" and "Couldn't find OTS data ... Trying in offline datatable" (462
+// lines on 2026-11-24) before HookWeaponGroupLoadRow's retry under weapon01's
+// name. Verified in the decompile: UYWeaponGroup::LoadWeaponDataTableRow
+// (0x518EE0) asks the tune manager first (0x3CA770 -> map +0x3A0, built by
+// 0x3D2130 keyed by each row's "Name") and the host fills that from this very
+// JSON (LoadBackupDataTablesFromAssets 0x3C83D0: GetTableAsJSON, parse, +0xD0).
+// So copies of weapon01's row under the two names make the lookup succeed at
+// the first step. A weapon row holds no projectile: the tier damage stays in
+// proj02 / proj03, as measured live with the retry (Veteran 150/300, Legendary
+// 200/500 asked). GUESS (as for the retry): the lost rows were copies of
+// weapon01's; the three Blueprints agree field for field.
+// Runs before the balancing patch, so a published change to these rows lands.
+static void AddCommandShipGunRows(uint8_t *fstr) {
+  static const char *src = "WP_ONS_AITargetH_weapon01_BP";
+  static const char *dst[2] = {"WP_ONS_AITargetH_weapon02_BP", "WP_ONS_AITargetH_weapon03_BP"};
+  wchar_t *data = *(wchar_t **)fstr;
+  int num = *(int32_t *)(fstr + 8);
+  if (!data || num <= 1)
+    return;
+  int len = num - 1, rs, re;
+  if (!TuneFindRow(data, len, src, &rs, &re)) {
+    Logf("command ship gun rows: %s not in DN_Weapons_OTS_DT's JSON -- nothing added", src);
+    return;
+  }
+  int rowLen = re - rs + 1;
+  int addLen = 0;
+  wchar_t *ins = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)(2 * (rowLen + 2) + 1));
+  if (!ins)
+    return;
+  char added[96];
+  added[0] = 0;
+  for (int i = 0; i < 2; ++i) {
+    int ds, de;
+    if (TuneFindRow(data, len, dst[i], &ds, &de))
+      continue; // the table has it (a different build): keep the game's
+    ins[addLen++] = L',';
+    ins[addLen++] = L'\n';
+    wchar_t *row = ins + addLen;
+    memcpy(row, data + rs, sizeof(wchar_t) * (size_t)rowLen);
+    addLen += rowLen;
+    // The row's "Name" value is its first mention of the name; the two names
+    // have weapon01's length, so it is renamed in place.
+    size_t nl = strlen(src);
+    for (int k = 0; k + (int)nl <= rowLen; ++k)
+      if (WideIs(row + k, src)) {
+        for (size_t c = 0; c < nl; ++c)
+          row[k + c] = (wchar_t)(unsigned char)dst[i][c];
+        break;
+      }
+    strcat_s(added, sizeof added, added[0] ? ", " : "");
+    strcat_s(added, sizeof added, dst[i] + 17); // "weapon02_BP"
+  }
+  if (!addLen) {
+    free(ins);
+    return;
+  }
+  // Inserted right after weapon01's row: inside the row array, so the JSON
+  // stays one array of row objects.
+  int nlen = len + addLen;
+  wchar_t *nb = (wchar_t *)((tFMemoryMalloc)(g_base + RVA_FMEMORY_MALLOC))(sizeof(wchar_t) * (size_t)(nlen + 1), 0);
+  if (!nb) {
+    free(ins);
+    return;
+  }
+  memcpy(nb, data, sizeof(wchar_t) * (size_t)(re + 1));
+  memcpy(nb + re + 1, ins, sizeof(wchar_t) * (size_t)addLen);
+  memcpy(nb + re + 1 + addLen, data + re + 1, sizeof(wchar_t) * (size_t)(len - re - 1));
+  nb[nlen] = 0;
+  free(ins);
+  *(wchar_t **)fstr = nb;
+  *(int32_t *)(fstr + 8) = nlen + 1;
+  *(int32_t *)(fstr + 12) = nlen + 1;
+  ((tFMemFreeTune)(g_base + RVA_FMEMORY_FREE_TUNE))(data);
+  Logf("command ship gun rows: added WP_ONS_AITargetH_%s to DN_Weapons_OTS_DT as copies of %s", added, src);
+}
+
 static void *__fastcall HookGetTableAsJSON(void *table, void *out, uint8_t flags) {
   void *ret = g_origGetTableAsJSON(table, out, flags);
   __try {
@@ -11779,6 +11862,8 @@ static void *__fastcall HookGetTableAsJSON(void *table, void *out, uint8_t flags
     if (!name || (strcmp(name, "DN_Weapons_OTS_DT") != 0 && strcmp(name, "DN_Projectile_OTS_DT") != 0 &&
                   strcmp(name, "DN_Officers_OTS_DT") != 0))
       return ret;
+    if (strcmp(name, "DN_Weapons_OTS_DT") == 0)
+      AddCommandShipGunRows((uint8_t *)out);
     TuneFetchOnce();
     if (g_tuneCount > 0) {
       // Two cooked tables are called DN_Projectile_OTS_DT (Projectiles/ and
