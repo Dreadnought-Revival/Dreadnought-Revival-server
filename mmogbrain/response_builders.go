@@ -1000,9 +1000,13 @@ func buildMmogChatPayload(requestName string, playerPID string, payload []byte) 
 		channel = "global"
 	}
 	message := protocol.FirstNonEmptyString(payload, "message", "Message", "content", "Content", "text", "Text")
+	// Queue commands (/pvp-only, /pvp, /queue, /help) arrive here: the client
+	// sends "/" lines over this path (queue_prefs.go). Answered on the
+	// player's chat connection and not stored.
+	isCommand := message != "" && mmogChatQueueCommand(normalizedPlayerStatePID(playerPID), message)
 	// A muted player's line is not stored, so nobody reads it (admin_mutes.go);
 	// the sender still gets the ordinary reply.
-	if message != "" && !adminChatMuted(playerPID) {
+	if message != "" && !isCommand && !adminChatMuted(playerPID) {
 		persistMmogChatMessage(normalizedPlayerStatePID(playerPID), channel, message)
 	}
 

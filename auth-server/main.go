@@ -41,6 +41,15 @@ func main() {
 	}()
 
 	h := &handlers.Handler{DB: database, Log: log, Secret: secret}
+	// Password reset by email (handlers/email_reset.go, smtp_mail.go).
+	if mailer, err := handlers.NewSMTPMailerFromEnv(getenv); err != nil {
+		log.WithError(err).Warn("SMTP settings invalid: password reset by email is off")
+	} else if mailer != nil {
+		h.Mail = mailer
+		log.WithField("smtp_host", mailer.Host).Info("password reset by email is on")
+	} else {
+		log.Info("SMTP_HOST unset: password reset by email is off")
+	}
 
 	go func() {
 		ticker := time.NewTicker(time.Hour)
@@ -62,6 +71,10 @@ func main() {
 	// Dreadnought profile-api compatible endpoints
 	r.Handle("/auth/", loginLimiter.Middleware(http.HandlerFunc(h.Login))).Methods(http.MethodPost)
 	r.Handle("/auth/register", loginLimiter.Middleware(http.HandlerFunc(h.Register))).Methods(http.MethodPost)
+	// Password reset by email: unauthenticated too, so limited per IP.
+	resetLimiter := middleware.NewRateLimiter(5, time.Minute)
+	r.Handle("/auth/password/forgot", resetLimiter.Middleware(http.HandlerFunc(h.ForgotPassword))).Methods(http.MethodPost)
+	r.Handle("/auth/password/reset", resetLimiter.Middleware(http.HandlerFunc(h.ResetPassword))).Methods(http.MethodPost)
 	r.HandleFunc("/auth/me", jwtMiddleware(secret, database, h.Me)).Methods(http.MethodGet)
 	r.HandleFunc("/auth/logout", h.Logout).Methods(http.MethodPost)
 	r.HandleFunc("/health", h.Health).Methods(http.MethodGet)

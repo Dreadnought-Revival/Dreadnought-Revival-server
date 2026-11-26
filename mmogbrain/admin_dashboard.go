@@ -10,7 +10,6 @@ package main
 // recorded in the admin_audit table with the caller's address.
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -31,27 +30,15 @@ type adminDashboardConfig struct {
 
 var adminDash adminDashboardConfig
 
-// constantTimeKeyMiddleware is the admin gate for the dashboard API: the
-// same key as adminKeyMiddleware, compared in constant time.
-func constantTimeKeyMiddleware(key string) mux.MiddlewareFunc {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			got := r.Header.Get("X-Admin-Key")
-			if key == "" || subtle.ConstantTimeCompare([]byte(got), []byte(key)) != 1 {
-				http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
 func registerAdminDashboard(r *mux.Router, adminKey, controlPlaneURL, internalKey string) {
 	adminDash = adminDashboardConfig{controlPlaneURL: controlPlaneURL, internalKey: internalKey, adminKey: adminKey, startedAt: time.Now()}
 	registerAdminUI(r)
+	registerStaffAuth(r) // /admin/login, /admin/logout (staff.go)
 
 	api := r.PathPrefix("/admin/api").Subrouter()
-	api.Use(constantTimeKeyMiddleware(adminKey))
+	// The admin key (compared in constant time), or a staff session with a
+	// role allowed on the route (staff.go; was the key alone until 2026-11-25).
+	api.Use(staffAPIMiddleware(adminKey))
 	api.HandleFunc("/overview", adminAPIOverview).Methods(http.MethodGet)
 	api.HandleFunc("/instances", adminAPIInstances).Methods(http.MethodGet)
 	api.HandleFunc("/instances/{id}", adminAPIStopInstance).Methods(http.MethodDelete)

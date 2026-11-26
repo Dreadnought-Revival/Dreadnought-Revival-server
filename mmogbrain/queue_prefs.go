@@ -25,11 +25,12 @@ import (
 // (matchmaker.PvPOnlyEligible); a squad queues with its LEADER's choice
 // (operator's picks, 2026-11-25).
 //
-// The client sends a chat line that starts with "/" to the server like any
-// other: /help, /gp and /global are in chat_messages (verified 2026-11-25);
-// no /pvp line has been seen yet. A command line is answered with a Server
-// line to the sender only, in Global, and is neither stored nor shown to
-// anyone else. Any other "/" line is ordinary chat, as before.
+// The client sends a chat line that starts with "/" to the server, but over
+// the MMOG connection (YA_ chat request, buildMmogChatPayload), not as a
+// social chat.channel.message (see mmogChatQueueCommand); both paths take
+// the commands. A command line is answered with a Server line to the sender
+// only, in Global, and is neither stored nor shown to anyone else. Any other
+// "/" line is handled as before.
 
 // queuePrefKey is the preference table's player key: undashed, lower case
 // (the matchmaker's normalizeUserID).
@@ -65,35 +66,74 @@ func queueEntryPvPOnly(database *sql.DB, pid, gameMode string) bool {
 // pvpOnlyModeList names the modes the choice applies to, for the replies.
 const pvpOnlyModeList = "Team Deathmatch, Turbo TDM, Team Elimination, Conquest, Ceres Awakens and Onslaught"
 
-// chatQueueCommand answers a queue command typed in chat. It returns false
-// for a line that is not one (it is then ordinary chat).
+// chatQueueCommand answers a queue command typed in a chat channel (the
+// social connection's chat.channel.message). It returns false for a line
+// that is not one (it is then ordinary chat).
 func chatQueueCommand(peer *socialPeer, body string) bool {
+	return runQueueCommand(peer.playerID, body, func(text string) { serverReplyTo(peer, text) })
+}
+
+// mmogChatQueueCommand is chatQueueCommand for a line that came over the
+// MMOG connection (buildMmogChatPayload). VERIFIED 2026-11-25: the client
+// sends every "/" line that way, not as chat.channel.message -- all 8 "/"
+// lines ever stored sit on channel "global" (the MMOG path's default),
+// against 1201 ordinary lines on dreadnought.global, and a /help typed after
+// the first deploy got no answer. The reply goes to the player's social
+// connection, the way every Server line reaches them.
+func mmogChatQueueCommand(playerPID, body string) bool {
+	return runQueueCommand(playerPID, body, func(text string) {
+		var peer *socialPeer
+		if socialHubInstance != nil {
+			peer = socialHubInstance.peerFor(socialID(playerPID))
+		}
+		if peer == nil {
+			logrus.WithField("player", playerPID).Warn("queue prefs: no chat connection to answer on")
+			return
+		}
+		serverReplyTo(peer, text)
+	})
+}
+
+// serverReplyTo posts one Server line to one player, in Global.
+func serverReplyTo(peer *socialPeer, text string) {
+	_ = peer.sendServerProfile(false)
+	_ = peer.send(chatMessageNotice("chat.channel.message", defaultChatChannels[0], serverChatEntry(),
+		chatTimeStamp(peer.playerID, time.Now())+text))
+}
+
+// runQueueCommand runs one queue command for pid and answers with reply; false
+// when body is not a queue command.
+func runQueueCommand(pid, body string, reply func(string)) bool {
 	line := strings.TrimSpace(body)
 	if !strings.HasPrefix(line, "/") {
 		return false
 	}
-	cmd := strings.ToLower(strings.Fields(line)[0])
+	first := strings.Fields(line)[0]
+	cmd := strings.ToLower(first)
 	switch cmd {
 	case "/pvp-only", "/pvponly", "/pvp_only", "/pvp", "/queue", "/help":
 	default:
-		return false
+		if _, staff := staffCommandRoles[cmd]; !staff { // staff_commands.go
+			return false
+		}
 	}
 	database := currentMmogPlayerStateDB()
-	reply := func(text string) {
-		_ = peer.sendServerProfile(false)
-		_ = peer.send(chatMessageNotice("chat.channel.message", defaultChatChannels[0], serverChatEntry(),
-			chatTimeStamp(peer.playerID, time.Now())+text))
-	}
 	if database == nil {
-		reply("Queue settings are not available right now.")
+		reply("Commands are not available right now.")
+		return true
+	}
+	if runStaffCommand(database, pid, cmd, strings.TrimSpace(line[len(first):]), reply) {
 		return true
 	}
 	switch cmd {
 	case "/help":
 		reply("Commands: /pvp-only - queue against players only, no bots. /pvp - queue with bots filling the teams (default). /queue - show your choice. They apply to " + pvpOnlyModeList + ".")
+		if staffLine := staffHelpLine(staffRoleOf(pid)); staffLine != "" {
+			reply(staffLine)
+		}
 		return true
 	case "/queue":
-		if playerQueuePvPOnly(database, peer.playerID) {
+		if playerQueuePvPOnly(database, pid) {
 			reply("You queue PvP only: you are matched with other PvP-only players and no bots. Type /pvp to queue with bots.")
 		} else {
 			reply("You queue with bots: bots fill the teams when there are not enough players. Type /pvp-only to play against players only.")
@@ -101,21 +141,21 @@ func chatQueueCommand(peer *socialPeer, body string) bool {
 		return true
 	}
 	on := cmd != "/pvp"
-	if err := setPlayerQueuePvPOnly(database, peer.playerID, on); err != nil {
-		logrus.WithError(err).WithField("player", peer.playerID).Warn("queue prefs: save failed")
+	if err := setPlayerQueuePvPOnly(database, pid, on); err != nil {
+		logrus.WithError(err).WithField("player", pid).Warn("queue prefs: save failed")
 		reply("Your queue choice could not be saved. Try again in a moment.")
 		return true
 	}
-	logrus.WithFields(logrus.Fields{"player": peer.playerID, "pvp_only": on}).Info("queue prefs: set by chat command")
+	logrus.WithFields(logrus.Fields{"player": pid, "pvp_only": on}).Info("queue prefs: set by chat command")
 	var text string
 	if on {
 		text = "PvP only is on: in " + pvpOnlyModeList + " you are matched only with other PvP-only players, with no bots. A match starts once there is a player for each team. Type /pvp to queue with bots again."
 	} else {
 		text = "PvP with bots is on: bots fill the teams when there are not enough players. Type /pvp-only to play against players only."
 	}
-	if leader, inSquad := squadHubInstance.leaderOf(peer.playerID); inSquad && leader != squadPID(peer.playerID) {
+	if leader, inSquad := squadHubInstance.leaderOf(pid); inSquad && leader != squadPID(pid) {
 		text += " In a squad, the squad leader's choice decides how the squad queues."
-	} else if moved := requeuePvPOnly(database, peer.playerID, on); moved {
+	} else if moved := requeuePvPOnly(database, pid, on); moved {
 		text += " Your current queue was switched too."
 	}
 	reply(text)

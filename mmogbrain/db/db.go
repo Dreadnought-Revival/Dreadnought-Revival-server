@@ -701,6 +701,31 @@ var migrations = []string{
 	// backfilled and hosted apart; the host gets DNTeamAI=00).
 	`ALTER TABLE queue_entries ADD COLUMN pvp_only INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE matches ADD COLUMN pvp_only INTEGER NOT NULL DEFAULT 0`,
+	// Staff accounts (staff.go; operator 2026-11-25): a player account with
+	// a role -- admin (everything), moderator, balancer -- for the dashboard
+	// (own sign-in, limited pages) and the in-game "/" commands. user_id is
+	// the 32-hex player id; added_by names who granted it.
+	`CREATE TABLE IF NOT EXISTS staff (
+		user_id    TEXT PRIMARY KEY,
+		role       TEXT NOT NULL,
+		added_by   TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL DEFAULT (datetime('now'))
+	)`,
+	// Dashboard sign-ins of staff accounts: the SHA-256 of the session token
+	// (the token itself is only ever in the browser), its account and expiry.
+	`CREATE TABLE IF NOT EXISTS staff_sessions (
+		token_hash TEXT PRIMARY KEY,
+		user_id    TEXT NOT NULL,
+		created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		expires_at TEXT NOT NULL,
+		ip         TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX IF NOT EXISTS staff_sessions_user ON staff_sessions(user_id)`,
+	// Staff two-factor sign-in (staff_totp.go): the RFC 6238 secret (base32;
+	// '' = not set up yet, set up at the next sign-in) and the last time step
+	// a code was accepted for, so a code works once.
+	`ALTER TABLE staff ADD COLUMN totp_secret TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE staff ADD COLUMN totp_step INTEGER NOT NULL DEFAULT 0`,
 }
 
 func Open(path string) (*sql.DB, error) {

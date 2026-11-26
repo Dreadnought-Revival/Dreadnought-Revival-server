@@ -98,19 +98,29 @@ func adminAPIPlayerMute(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	expires, err := adminMutePlayer(database, pid, reason, hours)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	adminAudit(database, r, "mute", pid, map[string]any{"reason": reason, "hours": hours, "expires_at": expires})
+	writeAdminJSON(w, map[string]any{"muted": true, "expires_at": expires})
+}
+
+// adminMutePlayer mutes pid for hours (0 = permanent): the row and the
+// in-memory list. Shared by the dashboard and the in-game /mute.
+func adminMutePlayer(database *sql.DB, pid, reason string, hours int) (string, error) {
 	adminLoadMutes()
 	expires := adminExpiryAfter(hours)
 	if _, err := database.Exec(`INSERT INTO admin_chat_mutes(user_id,reason,expires_at) VALUES(?,?,?)
 		ON CONFLICT(user_id) DO UPDATE SET reason=excluded.reason, expires_at=excluded.expires_at`, pid, reason, expires); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return "", err
 	}
 	end, _ := adminParseExpiry(expires)
 	adminMutes.mu.Lock()
 	adminMutes.until[pid] = end
 	adminMutes.mu.Unlock()
-	adminAudit(database, r, "mute", pid, map[string]any{"reason": reason, "hours": hours, "expires_at": expires})
-	writeAdminJSON(w, map[string]any{"muted": true, "expires_at": expires})
+	return expires, nil
 }
 
 func adminAPIPlayerUnmute(w http.ResponseWriter, r *http.Request) {

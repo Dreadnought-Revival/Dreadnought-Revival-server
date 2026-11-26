@@ -198,7 +198,7 @@
       run(() => postJSON(base() + '/shipxp', { ship_id: Number(ship.value), amount: n, mode: mode.value }), (d) => `Ship XP ${fmt(d.before)} → ${fmt(d.after)}: ${d.note}.`);
     } }, 'Apply');
     return [
-      section('Ship XP', el('div', { class: 'panel' }, el('div', { class: 'row' }, ship, mode, amount, apply),
+      Admin.can('POST', '/players/{pid}/shipxp') && section('Ship XP', el('div', { class: 'panel' }, el('div', { class: 'row' }, ship, mode, amount, apply),
         el('div', { class: 'muted' }, 'Stored per ship (pawn) id, like battle rewards; the game shows it under each hull of that ship. Free XP is changed in the action bar.')),
         table(['Ship', { label: 'XP', num: true }, 'Hull ids (client keys)', 'Updated'], P.ship_xp.map((x) => [x.name, fmt(x.xp),
           el('span', { class: 'mono' }, (x.hull_ids || []).join(', ') || '—'), when(x.updated)]), 'No ship has XP yet.')),
@@ -276,7 +276,7 @@
   }
 
   // The whole log as text, or (.gz) as it is stored: about a tenth of the size.
-  const logButton = (g) => el('span', { class: 'row', style: 'margin:0' },
+  const logButton = (g) => (!Admin.can('GET', '/client-logs/{id}') ? el('span', { class: 'muted' }, 'admins only') : el('span', { class: 'row', style: 'margin:0' },
     el('button', { class: 'btn small', type: 'button', onclick: async () => {
       const r = await act(() => apiBlob('/client-logs/' + g.id), msg(), 'Downloaded.');
       if (r) download(r.name, r.blob);
@@ -284,7 +284,7 @@
     el('button', { class: 'btn small', type: 'button', title: 'The stored file, gzip-compressed', onclick: async () => {
       const r = await act(() => apiBlob('/client-logs/' + g.id + '?gzip=1'), msg(), 'Downloaded.');
       if (r) download(r.name, r.blob);
-    } }, '.gz'));
+    } }, '.gz')));
 
   function tabReports() {
     const r = P.reports; const t = P.telemetry;
@@ -305,7 +305,7 @@
           c.seconds ? duration(c.seconds) : '—',
           c.on_exit ? chip('on exit (' + c.exit_code + ')', 'warn') : c.late ? chip('sent at next start', 'warn') : chip('during play (exit ' + c.exit_code + ')', 'bad'),
           fmt(c.files), bytes(c.bytes) + (c.stored_bytes ? ' (' + bytes(c.stored_bytes) + ' stored)' : ''), c.launcher_version || '—',
-          el('button', { class: 'btn small', type: 'button', title: c.report_name, onclick: async () => {
+          !Admin.can('GET', '/client-crashes/{id}') ? el('span', { class: 'muted' }, 'admins only') : el('button', { class: 'btn small', type: 'button', title: c.report_name, onclick: async () => {
             const r = await act(() => apiBlob('/client-crashes/' + c.id), msg(), 'Downloaded.');
             if (r) download(r.name, r.blob);
           } }, 'Download .zip')]), 'No crash reports uploaded yet.'),
@@ -368,6 +368,23 @@
       <div id="plBody"></div>`,
     init() {
       wireActions();
+      // Staff roles (staff.go): hide what the signed-in role cannot use.
+      const { gate } = Admin; const P_ = '/players/{pid}/';
+      gate('POST', P_ + 'kick', ['plKick']);
+      gate('POST', P_ + 'ban', ['plBanFor', 'plBan']);
+      gate('POST', P_ + 'unban', ['plUnban']);
+      gate('POST', P_ + 'mute', ['plMuteFor', 'plMute']);
+      gate('POST', P_ + 'unmute', ['plUnmute']);
+      gate('POST', P_ + 'rename', ['plNewName', 'plRename']);
+      if (!Admin.can('POST', P_ + 'rename')) $('plSignOut').closest('label').classList.add('hidden');
+      gate('POST', P_ + 'password', ['plResetPw']);
+      gate('POST', P_ + 'contracts/reset', ['plResetContracts']);
+      gate('POST', P_ + 'tune-test', ['plTune', 'plTuneSave']);
+      gate('POST', P_ + 'currency', ['plCredits'], true);
+      gate('POST', P_ + 'ships', ['plHero'], true);
+      // A moderator's longest ban (max_ban_hours): longer choices are removed.
+      const cap = (Admin.me() && Admin.me().max_ban_hours) || 0;
+      if (cap) [...$('plBanFor').options].forEach((o) => { const h = Number(o.value); if (h === 0 || h > cap) o.remove(); });
       tabCtl = tabs($('plTabs'), TABS, renderBody);
       tabCtl.pick('overview');
     },

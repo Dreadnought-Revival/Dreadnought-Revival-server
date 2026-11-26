@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dreadnought-Revival/Dreadnought-Revival-server/mmogbrain/protocol"
 )
 
 const (
@@ -126,5 +128,45 @@ func TestPvPOnlyQueueAnnouncement(t *testing.T) {
 	want := "A squad of 2 is searching for a PvP-only Legendary Onslaught match (no bots). Type /pvp-only and queue with your Legendary fleet to play against them!"
 	if got := serverChatQueueLine("Onslaught", 3, 2, true); got != want {
 		t.Errorf("got %q\nwant %q", got, want)
+	}
+}
+
+// The client sends "/" lines over the MMOG connection (all 8 stored "/"
+// lines are on that path's "global" channel). A /help there is answered on
+// the player's social connection and not stored; an ordinary line still is.
+func TestHelpOverTheMmogChatPathIsAnswered(t *testing.T) {
+	database := useTempMmogPlayerStateDB(t)
+	hub := socialTestHub(t)
+	saved := socialHubInstance
+	socialHubInstance = hub
+	t.Cleanup(func() { socialHubInstance = saved })
+	_, read := socialTestPeer(t, hub, prefTestPID)
+	pushes := pushLines(read)
+
+	payload := protocol.AppendStringField(nil, "message", "/help")
+	_ = buildMmogChatPayload("YA_GlobalChat", prefTestPID, payload)
+	nextPush(t, pushes) // the Server profile
+	_, data := nextPush(t, pushes)
+	if text := unstamped(t, data["text"]); !strings.HasPrefix(text, "Commands: /pvp-only") {
+		t.Errorf("reply %q", text)
+	}
+	var stored int
+	_ = database.QueryRow(`SELECT COUNT(*) FROM chat_messages WHERE content='/help'`).Scan(&stored)
+	if stored != 0 {
+		t.Error("the /help line was stored")
+	}
+
+	_ = buildMmogChatPayload("YA_GlobalChat", prefTestPID, protocol.AppendStringField(nil, "message", "/pvp-only"))
+	if _, data = nextPush(t, pushes); !strings.HasPrefix(unstamped(t, data["text"]), "PvP only is on") {
+		t.Errorf("reply %q", data["text"])
+	}
+	if !playerQueuePvPOnly(database, prefTestPID) {
+		t.Error("/pvp-only over the MMOG path was not stored as the choice")
+	}
+
+	_ = buildMmogChatPayload("YA_GlobalChat", prefTestPID, protocol.AppendStringField(nil, "message", "/gp"))
+	_ = database.QueryRow(`SELECT COUNT(*) FROM chat_messages WHERE content='/gp'`).Scan(&stored)
+	if stored != 1 {
+		t.Errorf("an ordinary / line stored %d times, want 1 (unchanged)", stored)
 	}
 }

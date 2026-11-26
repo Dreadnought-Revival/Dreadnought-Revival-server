@@ -30,6 +30,8 @@ type Handler struct {
 	DB     *sql.DB
 	Log    *logrus.Logger
 	Secret []byte
+	// Mail sends the password reset codes (email_reset.go); nil = not set up.
+	Mail Mailer
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

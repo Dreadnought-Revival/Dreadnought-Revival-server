@@ -89,6 +89,9 @@
     if (!picked) { $('mdMsg').className = 'err'; $('mdMsg').textContent = 'Pick a player first (search by name or paste the player id).'; return; }
     const hours = parseInt($('mdHours').value, 10); const reason = $('mdReason').value.trim();
     if (!reason) { $('mdMsg').className = 'err'; $('mdMsg').textContent = 'A reason is required.'; return; }
+    // A moderator bans for at most max_ban_hours (staff.go); mutes have no cap.
+    const cap = (Admin.me() && Admin.me().max_ban_hours) || 0;
+    if (kind === 'ban' && cap && (hours === 0 || hours > cap)) { $('mdMsg').className = 'err'; $('mdMsg').textContent = `As a moderator you can ban for at most ${cap / 24} days; a longer or permanent ban needs a global admin.`; return; }
     const label = (DURATIONS.find((d) => d[0] === hours) || [0, ''])[1].toLowerCase();
     const who = picked.name || picked.pid;
     if (!confirm(`${kind === 'ban' ? 'Ban' : 'Mute'} ${who} (${label})?\n\n${kind === 'ban' ? 'They are signed out of the game now.' : 'Their chat lines are dropped; they can keep playing.'}`)) return;

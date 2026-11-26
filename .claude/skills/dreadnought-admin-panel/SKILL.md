@@ -42,26 +42,43 @@ hostname was **not tested** (unverified). The key is then the only gate.
 
 ## Authentication and authorization
 
-There are **no admin accounts, roles or sessions.** A player account cannot "become
-admin". One shared secret does everything:
+Two ways in (since 2026-11-25, `mmogbrain/staff.go`):
 
-- Secret: env var `ADMIN_KEY` (in `run/secrets.env`; never print its value).
+- **Staff accounts** (table `staff`: player id + role `admin` | `moderator` | `balancer`;
+  managed on the **Staff** page, global admins only). A staff member signs in on the
+  dashboard with their **game** name/email and password: `POST /admin/login` asks the auth
+  server (`POST /auth/`), verifies the JWT it returns with `JWT_SECRET`, and issues a 12 h
+  session token (`staff_sessions` stores only its SHA-256; 10 attempts per IP per 15 min).
+  The browser sends it as `X-Admin-Session`; `POST /admin/logout` ends it; removing someone
+  from the staff ends their sessions at once.
+- **The admin key** (`ADMIN_KEY` in `run/secrets.env`; never print its value), header
+  `X-Admin-Key`, compared in constant time. It counts as a global admin (break-glass).
   `requireAdminKey` (`main.go`) makes mmogbrain refuse to start if it is empty or the
-  placeholder `changeme-admin-key`. `INTERNAL_API_KEY` falls back to `ADMIN_KEY`
-  (used for the control plane, port 8085).
-- Check: header `X-Admin-Key`, compared in constant time
-  (`constantTimeKeyMiddleware`, `admin_dashboard.go`). Wrong or missing gives
-  `403 {"error":"forbidden"}`. The middleware sits on the `/admin/api` subrouter, so a
-  route added there is guarded automatically.
-- Browser: the sign-in form keeps the key in `sessionStorage` (`adminKey`) and sends it
-  on every `Admin.api()` call. A 403 locks the UI again. There is no cookie and no
-  server-side session or expiry. No login rate limit or lockout was found in
-  mmogbrain (unverified for the gateway path).
+  placeholder `changeme-admin-key`. `INTERNAL_API_KEY` falls back to `ADMIN_KEY`.
+
+**Roles.** `staffAPIMiddleware` (on the `/admin/api` subrouter) checks the credential, then
+the route: `staffRoutePerms` is an allow-list of `"METHOD /template"` per role; **anything not
+listed is global-admin only**, so a new route never opens to moderators or balancers by
+accident. When adding a route a moderator or balancer should use, add it there (the test
+`TestStaffPermissionsNameRealRoutes` catches typos). `staffPages` lists the pages each role
+sees (`GET /whoami` returns them; the front end hides the rest). A bad credential is
+`403 {"error":"forbidden"}` (dashboard locks); a role refusal is `403` with a readable reason.
+Moderators: bans 1..168 h only and may lift only timed bans (enforced in the ban/unban
+handlers and the in-game `/ban`, `/unban`). Balancers: tune, tech tree, game modes, market,
+economy settings, read-only stats.
+
+**In-game staff commands** (`staff_commands.go`): `/who`, `/warn`, `/mute`, `/unmute`,
+`/kick`, `/ban`, `/unban`, `/announce`, gated by role (`staffCommandRoles`). The client sends
+every "/" line as an admin command over the MMOG connection (`buildMmogChatPayload`; YMmogChat
+0x2A47FC0 logs "Sending admin command"); answers are private Server lines.
+
+- Browser: the sign-in form keeps the key (`adminKey`) or session token (`adminSession`) in
+  `sessionStorage` and sends it on every `Admin.api()` call.
 - The same `ADMIN_KEY` guards the auth server's `/admin/ban`, `/admin/unban`,
   `/admin/password`, `/admin/rename` (mmogbrain calls them with the key) and `admin-cli`.
 - Audit: every action calls `adminAudit` and writes a row to `admin_audit`
-  (`actor` = caller IP, `127.0.0.1` through a proxy; `actor` = `server` for things the
-  server did on its own, e.g. a ban expiring).
+  (`actor` = `"Name (moderator)"` for a staff session or in-game command, the caller's IP
+  for the admin key, `server` for things the server did on its own, e.g. a ban expiring).
 
 ## How a page works (front end)
 
@@ -93,6 +110,11 @@ Admin.page({
 ## Pages
 
 Group, page title, route, what it shows, actions. All endpoints are under `/admin/api`.
+
+### Staff (System group, global admins only)
+
+`#/staff`: add a player by captain name or id with a role, change roles, remove (ends their
+sessions). `GET /staff`, `POST /staff {player, role}`, `DELETE /staff/{pid}`; audit `staff role`.
 
 ### Live
 
@@ -271,6 +293,6 @@ Run `go test ./...` and `go vet ./...` inside `mmogbrain/` (per-module; see `dre
   in-session re-fetch (`dreadnought-in-session-refresh` in memory notes).
 - Front-end files are embedded: editing `admin_ui/` without rebuilding mmogbrain changes
   nothing. Static assets are `no-store`, so a rebuild shows on the next page load.
-- The audit `actor` is the caller's IP, so it cannot tell two admins apart (one shared key);
-  proxied requests all show `127.0.0.1`.
+- With the admin key the audit `actor` is the caller's IP (proxied requests show
+  `127.0.0.1`); give people staff accounts instead of the key so actions carry their names.
 - Deploy and restart follow `dreadnought-stack`. The dashboard Restart control only waits for battle servers to finish; it never kills a match.

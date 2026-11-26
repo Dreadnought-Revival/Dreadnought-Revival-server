@@ -27,7 +27,20 @@ window.Admin = (() => {
     del(k) { try { sessionStorage.removeItem(k); } catch (e) {} },
   };
 
+  // The credential: a staff session token (X-Admin-Session) or the admin key
+  // (X-Admin-Key). me is who /whoami says is signed in.
   let key = store.get('adminKey');
+  let session = store.get('adminSession');
+  let me = null;
+  const signedIn = () => !!(key || session);
+  const authHeaders = () => (session ? { 'X-Admin-Session': session } : { 'X-Admin-Key': key || '' });
+  // refused: a 403 is either a bad or expired credential ({"error":"forbidden"}:
+  // lock the dashboard) or a role that may not do this (show the reason).
+  async function refused(res) {
+    const t = await res.text(); let m = t; try { m = JSON.parse(t).error || t; } catch (e) {}
+    if (m === 'forbidden') { lock(session ? 'Your session ended. Sign in again.' : 'That key was not accepted.'); throw new Error('forbidden'); }
+    throw new Error(m);
+  }
   const pages = new Map();
   let current = null; let currentArg = ''; let timer = null; let paused = false; let busy = false; let started = false;
 
@@ -35,16 +48,16 @@ window.Admin = (() => {
   // api returns the parsed JSON reply. A refused key locks the dashboard and
   // throws Error('forbidden'); any other failure throws the server's message.
   async function api(path, opts = {}) {
-    const res = await fetch('/admin/api' + path, { ...opts, headers: { 'X-Admin-Key': key || '', ...(opts.headers || {}) } });
-    if (res.status === 403) { lock('That key was not accepted.'); throw new Error('forbidden'); }
+    const res = await fetch('/admin/api' + path, { ...opts, headers: { ...authHeaders(), ...(opts.headers || {}) } });
+    if (res.status === 403) await refused(res);
     const text = await res.text();
     if (!res.ok) { let m = text; try { m = JSON.parse(text).error || text; } catch (e) {} throw new Error(m.trim() || res.statusText); }
     return text ? JSON.parse(text) : {};
   }
   // apiText: like api, for an endpoint that answers plain text (a file).
   async function apiText(path) {
-    const res = await fetch('/admin/api' + path, { headers: { 'X-Admin-Key': key || '' } });
-    if (res.status === 403) { lock('That key was not accepted.'); throw new Error('forbidden'); }
+    const res = await fetch('/admin/api' + path, { headers: authHeaders() });
+    if (res.status === 403) await refused(res);
     const text = await res.text();
     if (!res.ok) { let m = text; try { m = JSON.parse(text).error || text; } catch (e) {} throw new Error(m.trim() || res.statusText); }
     return { text, name: ((res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/) || [])[1] || 'download.txt' };
@@ -52,8 +65,8 @@ window.Admin = (() => {
   // apiBlob: like apiText, but the file stays binary (a whole session's game log
   // can be hundreds of MB: as a string it would not fit) and a name is returned.
   async function apiBlob(path) {
-    const res = await fetch('/admin/api' + path, { headers: { 'X-Admin-Key': key || '' } });
-    if (res.status === 403) { lock('That key was not accepted.'); throw new Error('forbidden'); }
+    const res = await fetch('/admin/api' + path, { headers: authHeaders() });
+    if (res.status === 403) await refused(res);
     if (!res.ok) { const t = await res.text(); let m = t; try { m = JSON.parse(t).error || t; } catch (e) {} throw new Error(m.trim() || res.statusText); }
     return { blob: await res.blob(), name: ((res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/) || [])[1] || 'download.bin' };
   }
@@ -283,6 +296,13 @@ window.Admin = (() => {
 
   // --- navigation -----------------------------------------------------------
   function page(def) { pages.set(def.id, def); }
+  // allowed: whether the signed-in role sees a page (null pages = every page).
+  const allowed = (id) => !me || !me.pages || me.pages.includes(id);
+  // can: whether the signed-in role may call METHOD on a route template
+  // ('POST', '/players/{pid}/ban'); pages hide what it cannot use.
+  const can = (method, tpl) => !me || !me.routes || me.routes.includes(method + ' ' + tpl);
+  // gate: hide elements (ids) the role cannot use; whole: hide the enclosing .row.
+  const gate = (method, tpl, ids, whole) => { if (can(method, tpl)) return; ids.forEach((id) => { const e = $(id); if (e) (whole ? e.closest('.row') || e : e).classList.add('hidden'); }); };
   const href = (id, arg) => '#/' + id + (arg != null && arg !== '' ? '/' + encodeURIComponent(arg) : '');
   function go(id, arg) { if (location.hash === href(id, arg)) show(); else location.hash = href(id, arg); }
   // link: an in-dashboard link to a page.
@@ -290,7 +310,8 @@ window.Admin = (() => {
   const playerLink = (pid, name) => (pid ? link(name || pid.slice(0, 8) + '…', 'player', pid) : el('span', {}, name || '?'));
   function route() {
     const m = location.hash.match(/^#\/([\w-]+)(?:\/(.*))?$/);
-    const id = m && pages.has(m[1]) ? m[1] : 'overview';
+    let id = m && pages.has(m[1]) ? m[1] : 'overview';
+    if (!allowed(id)) id = [...pages.keys()].find(allowed) || 'overview';
     let arg = '';
     if (m && m[2]) { try { arg = decodeURIComponent(m[2]); } catch (e) { arg = m[2]; } }
     return { id, arg };
@@ -298,7 +319,7 @@ window.Admin = (() => {
   function buildNav() {
     const nav = $('nav'); nav.replaceChildren();
     GROUPS.forEach((g) => {
-      const items = [...pages.values()].filter((p) => !p.hidden && p.group === g).sort((a, b) => (a.order || 0) - (b.order || 0));
+      const items = [...pages.values()].filter((p) => !p.hidden && p.group === g && allowed(p.id)).sort((a, b) => (a.order || 0) - (b.order || 0));
       if (!items.length) return;
       nav.append(el('h4', {}, g));
       items.forEach((p) => nav.append(el('a', { href: href(p.id), 'data-page': p.id }, el('span', {}, typeof p.title === 'function' ? p.title('') : p.title), el('span', { class: 'badge hidden', id: 'badge-' + p.id }))));
@@ -317,7 +338,7 @@ window.Admin = (() => {
     if (def.init) def.init(def.root);
   }
   function show() {
-    if (!key || !started) return;
+    if (!signedIn() || !started || !me) return;
     const { id, arg } = route();
     const def = pages.get(id) || pages.values().next().value;
     if (!def) return;
@@ -352,12 +373,64 @@ window.Admin = (() => {
   }
 
   // --- sign-in --------------------------------------------------------------
-  function lock(msg) {
-    key = null; store.del('adminKey'); clearInterval(timer);
-    $('app').classList.add('hidden'); $('login').classList.remove('hidden');
-    $('loginErr').textContent = msg || ''; $('keyInput').value = ''; $('keyInput').focus();
+  let keyMode = false;
+  let loginToken = null; // between the password and the authenticator code (staff_totp.go)
+  function loginMode(useKey) {
+    keyMode = useKey; loginToken = null;
+    $('totpFields').classList.add('hidden'); $('loginMode').classList.remove('hidden');
+    $('keyFields').classList.toggle('hidden', !useKey); $('staffFields').classList.toggle('hidden', useKey);
+    $('loginMode').textContent = useKey ? 'Sign in with a staff account instead' : 'Use the admin key instead';
+    (useKey ? $('keyInput') : $('userInput')).focus();
   }
-  function unlock() { $('login').classList.add('hidden'); $('app').classList.remove('hidden'); show(); }
+  function lock(msg) {
+    key = null; session = null; me = null; store.del('adminKey'); store.del('adminSession'); clearInterval(timer);
+    $('app').classList.add('hidden'); $('login').classList.remove('hidden');
+    $('loginErr').textContent = msg || ''; $('keyInput').value = ''; $('passInput').value = ''; $('totpInput').value = '';
+    loginMode(keyMode);
+  }
+  // unlock: ask who is signed in, build the menu for that role, show a page.
+  async function unlock() {
+    try { me = await api('/whoami'); } catch (e) { if (e.message !== 'forbidden') lock('Sign-in failed: ' + e.message); return; }
+    $('login').classList.add('hidden'); $('app').classList.remove('hidden');
+    $('whoami').textContent = me.name + ' · ' + me.role_name;
+    buildNav(); show();
+  }
+  async function signIn() {
+    $('loginErr').textContent = '';
+    if (keyMode) { key = $('keyInput').value; session = null; store.set('adminKey', key); store.del('adminSession'); return unlock(); }
+    const post = async (path, body) => {
+      const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const t = await res.text(); let d = {}; try { d = JSON.parse(t); } catch (e) {}
+      if (!res.ok) d.error = d.error || ('Sign-in failed (' + res.status + ')');
+      return d;
+    };
+    let d;
+    if (loginToken) { // step 2: the authenticator code
+      d = await post('/admin/login/totp', { login_token: loginToken, code: $('totpInput').value });
+      if (d.error) { $('loginErr').textContent = d.error; $('totpInput').value = ''; if (/expired/.test(d.error)) loginMode(false); return; }
+    } else { // step 1: name and password
+      d = await post('/admin/login', { username: $('userInput').value.trim(), password: $('passInput').value });
+      $('passInput').value = '';
+      if (d.error) { $('loginErr').textContent = d.error; return; }
+      if (d.totp) {
+        loginToken = d.login_token;
+        $('staffFields').classList.add('hidden'); $('loginMode').classList.add('hidden'); $('totpFields').classList.remove('hidden');
+        const setup = d.totp === 'setup';
+        $('totpSetup').classList.toggle('hidden', !setup); $('totpAsk').classList.toggle('hidden', setup);
+        if (setup) { $('totpQR').src = d.qr || ''; $('totpQR').classList.toggle('hidden', !d.qr); $('totpSecret').textContent = d.secret; }
+        $('totpInput').focus();
+        return;
+      }
+    }
+    if (!d.token) { $('loginErr').textContent = 'Sign-in failed.'; return; }
+    loginToken = null;
+    session = d.token; key = null; store.set('adminSession', session); store.del('adminKey'); $('passInput').value = '';
+    unlock();
+  }
+  async function signOut() {
+    if (session) { try { await fetch('/admin/logout', { method: 'POST', headers: authHeaders() }); } catch (e) {} }
+    lock('');
+  }
 
   // --- find a player (sidebar) ---------------------------------------------
   function initJump() {
@@ -390,9 +463,10 @@ window.Admin = (() => {
 
   function start() {
     started = true;
-    buildNav(); initJump();
-    $('loginForm').onsubmit = (e) => { e.preventDefault(); key = $('keyInput').value; store.set('adminKey', key); unlock(); };
-    $('logoutBtn').onclick = () => lock('');
+    initJump();
+    $('loginForm').onsubmit = (e) => { e.preventDefault(); signIn(); };
+    $('loginMode').onclick = (e) => { e.preventDefault(); loginMode(!keyMode); };
+    $('logoutBtn').onclick = () => signOut();
     $('refreshBtn').onclick = () => refresh();
     $('pauseBtn').onclick = () => { paused = !paused; $('pauseBtn').textContent = paused ? 'Paused' : 'Live'; $('pauseBtn').classList.toggle('on', !paused); schedule(); };
     $('pauseBtn').classList.add('on');
@@ -405,13 +479,14 @@ window.Admin = (() => {
     };
     window.addEventListener('hashchange', show);
     document.addEventListener('visibilitychange', () => { if (!document.hidden && timer) refresh(); });
-    if (key) unlock(); else lock('');
+    if (signedIn()) unlock(); else lock('');
   }
 
   return {
     $, el, svg, api, apiText, apiBlob, postJSON, fmt, compact, ago, when, duration, bytes, parseTime, card, chip, fill, table, kv, tabs, toast, act, debounce, toCSV, download,
     MODE_NAMES, modeName, FLEET_NAMES, fleetName, auditText, SERIES, chart, bars, meter,
     page, go, link, playerLink, href, setBadge, setTitle, refresh, schedule, start,
+    me: () => me, allowed, can, gate,
     arg: () => currentArg,
   };
 })();

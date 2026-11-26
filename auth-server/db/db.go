@@ -34,6 +34,17 @@ var migrations = []string{
 	// v4: track Steam-linked users
 	`ALTER TABLE users ADD COLUMN steam_id TEXT`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_steam_id ON users(steam_id) WHERE steam_id IS NOT NULL`,
+	// v6: password reset by email (handlers/email_reset.go). One live code per
+	// account, stored as a hash; sent/day_count limit how often one is mailed.
+	`CREATE TABLE IF NOT EXISTS password_resets (
+		user_id    TEXT PRIMARY KEY REFERENCES users(id),
+		code_hash  TEXT NOT NULL,
+		expires_at TEXT NOT NULL,
+		attempts   INTEGER NOT NULL DEFAULT 0,
+		sent_at    TEXT NOT NULL,
+		day        TEXT NOT NULL DEFAULT '',
+		day_count  INTEGER NOT NULL DEFAULT 0
+	)`,
 }
 
 func Open(path string) (*sql.DB, error) {

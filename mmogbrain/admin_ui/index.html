@@ -16,9 +16,26 @@ try { const t = localStorage.getItem('adminTheme'); if (t === 'dark' || t === 'l
 <div id="login" class="hidden">
   <form class="card" id="loginForm" autocomplete="off">
     <h1>Server Admin</h1>
-    <div class="muted">Enter the admin key (ADMIN_KEY in run/secrets.env).</div>
-    <input type="password" id="keyInput" placeholder="Admin key" autocomplete="off" required>
+    <div id="staffFields">
+      <div class="muted">Staff: sign in with your game account (captain name or email).</div>
+      <input type="text" id="userInput" placeholder="Captain name or email" autocomplete="username" spellcheck="false">
+      <input type="password" id="passInput" placeholder="Password" autocomplete="current-password">
+    </div>
+    <div id="totpFields" class="hidden">
+      <div id="totpSetup" class="hidden">
+        <div class="muted">Set up two-factor sign-in: scan this code with an authenticator app (Google or Microsoft Authenticator, Authy, 1Password …), or type the key into it. Then enter the 6-digit code it shows.</div>
+        <img id="totpQR" alt="QR code for the authenticator app" width="220" height="220">
+        <div class="muted">Key: <code id="totpSecret" style="user-select:all"></code></div>
+      </div>
+      <div id="totpAsk" class="muted">Enter the 6-digit code from your authenticator app.</div>
+      <input type="text" id="totpInput" placeholder="123456" inputmode="numeric" autocomplete="one-time-code" maxlength="8" spellcheck="false">
+    </div>
+    <div id="keyFields" class="hidden">
+      <div class="muted">Enter the admin key (ADMIN_KEY in run/secrets.env).</div>
+      <input type="password" id="keyInput" placeholder="Admin key" autocomplete="off">
+    </div>
     <div class="row"><button class="btn primary" type="submit">Sign in</button><span class="err" id="loginErr"></span></div>
+    <div class="row"><a class="link" href="#" id="loginMode">Use the admin key instead</a></div>
   </form>
 </div>
 
@@ -41,6 +58,7 @@ try { const t = localStorage.getItem('adminTheme'); if (t === 'dark' || t === 'l
       <button class="btn small" id="refreshBtn" type="button">Refresh</button>
       <button class="btn small" id="pauseBtn" type="button" title="Automatic refresh on or off">Live</button>
       <button class="btn small" id="themeBtn" type="button">Theme</button>
+      <span class="muted" id="whoami"></span>
       <button class="btn small" id="logoutBtn" type="button">Sign out</button>
     </header>
     <main id="main"></main>

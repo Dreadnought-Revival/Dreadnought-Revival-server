@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -92,6 +91,17 @@ func adminLoadBans() {
 	adminModeration.mu.Unlock()
 }
 
+// adminBanPermanent reports whether a player's ban has no end (a moderator
+// may lift only timed bans; staff.go).
+func adminBanPermanent(pid string) bool {
+	adminLoadBans()
+	pid = normalizedPlayerStatePID(pid)
+	adminModeration.mu.Lock()
+	defer adminModeration.mu.Unlock()
+	_, timed := adminModeration.until[pid]
+	return adminModeration.banned[pid] && !timed
+}
+
 // adminPlayerBanned reports whether a player (any id form) is banned.
 func adminPlayerBanned(pid string) bool {
 	adminLoadBans()
@@ -146,12 +156,15 @@ func adminDisconnect(pid string) (wasOnline bool) {
 	return wasOnline
 }
 
-// adminAudit records one admin action. actor is the caller's address.
+// adminAudit records one admin action. actor is the staff member who signed
+// in ("Name (moderator)"), or the caller's address for the admin key.
 func adminAudit(database *sql.DB, r *http.Request, action, target string, details any) {
-	actor := r.RemoteAddr
-	if host, _, err := net.SplitHostPort(actor); err == nil {
-		actor = host
-	}
+	adminAuditActor(database, staffFromRequest(r).label(), action, target, details)
+}
+
+// adminAuditActor records one action by a named actor (in-game staff
+// commands, sign-ins).
+func adminAuditActor(database *sql.DB, actor, action, target string, details any) {
 	text := ""
 	if details != nil {
 		if b, err := json.Marshal(details); err == nil {
@@ -218,12 +231,28 @@ func adminAPIPlayerBan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if max := staffMaxBanHours(staffFromRequest(r).role); max > 0 && (hours == 0 || hours > max) {
+		http.Error(w, fmt.Sprintf(`{"error":"moderators can ban for at most %d hours (7 days); a permanent ban needs a global admin"}`, max), http.StatusForbidden)
+		return
+	}
+	details, err := adminBanPlayer(database, pid, reason, hours)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	adminAudit(database, r, "ban", pid, details)
+	adminAPIPlayerDetail(w, r)
+}
+
+// adminBanPlayer bans pid for hours (0 = permanent): the row, the in-memory
+// list, their connections, and the auth server (best effort). Returns the
+// audit details. Shared by the dashboard and the in-game /ban.
+func adminBanPlayer(database *sql.DB, pid, reason string, hours int) (map[string]any, error) {
 	adminLoadBans()
 	expires := adminExpiryAfter(hours)
 	if _, err := database.Exec(`INSERT INTO admin_bans(user_id,reason,expires_at) VALUES(?,?,?)
 		ON CONFLICT(user_id) DO UPDATE SET reason=excluded.reason, expires_at=excluded.expires_at`, pid, reason, expires); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 	adminModeration.mu.Lock()
 	adminModeration.banned[pid] = true
@@ -239,13 +268,16 @@ func adminAPIPlayerBan(w http.ResponseWriter, r *http.Request) {
 	if authErr != nil {
 		details["auth"] = authErr.Error()
 	}
-	adminAudit(database, r, "ban", pid, details)
-	adminAPIPlayerDetail(w, r)
+	return details, nil
 }
 
 func adminAPIPlayerUnban(w http.ResponseWriter, r *http.Request) {
 	pid, database, ok := adminPlayerPID(w, r)
 	if !ok {
+		return
+	}
+	if staffMaxBanHours(staffFromRequest(r).role) > 0 && adminBanPermanent(pid) {
+		http.Error(w, `{"error":"a permanent ban can be lifted only by a global admin"}`, http.StatusForbidden)
 		return
 	}
 	authErr, err := adminUnbanPlayer(database, pid)
